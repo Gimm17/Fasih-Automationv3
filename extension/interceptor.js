@@ -2,6 +2,7 @@
  * FASIH Window.open Interceptor (runs in page context, CSP compliant via web_accessible_resources)
  */
 (function() {
+  'use strict';
   if (window.__fasih_interceptor_loaded) return;
   window.__fasih_interceptor_loaded = true;
   const _origOpen = window.open;
