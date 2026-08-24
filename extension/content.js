@@ -43,6 +43,15 @@ function extractCodeFromText(text) {
   return '';
 }
 
+const FASIH_ORIGIN = 'https://fasih-sm.bps.go.id';
+function toAbsoluteUrl(u) {
+  if (!u) return '';
+  if (/^https?:\/\//i.test(u)) return u;          // sudah absolute
+  if (u.startsWith('//')) return 'https:' + u;     // protocol-relative
+  if (u.startsWith('/')) return FASIH_ORIGIN + u;  // root-relative
+  return FASIH_ORIGIN + '/' + u;                   // path-relative
+}
+
 function extractField(container, labelText) {
   if (!container) return '';
   const esc = labelText.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
@@ -582,9 +591,7 @@ async function doExtractCode(code, searchDelay, modalDelay) {
   if (!reviewUrl) reviewUrl = extractReviewLinkAddress(btnEl, btnEl);
 
   // Absolute-kan URL relative dari React props (mis. "/app/assignment/.../...").
-  if (reviewUrl && reviewUrl.startsWith('/')) {
-    reviewUrl = 'https://fasih-sm.bps.go.id' + reviewUrl;
-  }
+  reviewUrl = toAbsoluteUrl(reviewUrl);
 
   let uuid = reviewUrl ? extractAssignmentIdFromReviewUrl(reviewUrl) : '';
 
@@ -595,7 +602,7 @@ async function doExtractCode(code, searchDelay, modalDelay) {
     await delay(1200);
     const openUrl = capturedWindowOpenUrl;
     if (openUrl) {
-      const abs = openUrl.startsWith('/') ? 'https://fasih-sm.bps.go.id' + openUrl : openUrl;
+      const abs = toAbsoluteUrl(openUrl);
       uuid = extractAssignmentIdFromReviewUrl(abs);
       if (!reviewUrl) reviewUrl = abs;
     }
