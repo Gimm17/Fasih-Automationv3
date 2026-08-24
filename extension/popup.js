@@ -295,6 +295,8 @@ extractStopBtn.addEventListener('click', async () => {
   extractStopped = true;
   const tab = await getFasihTab();
   if (tab) chrome.tabs.sendMessage(tab.id, { type: 'STOP_EXTRACT' }).catch(() => {});
+  // Stop juga round-trip yang jalan di background (popup mungkin tertutup saat tab switch).
+  chrome.runtime.sendMessage({ type: 'STOP_BG_EXTRACT' }).catch(() => {});
   appendLog('⛔ Stop ekstrak diminta.', 'warning');
   setStatus('stopped');
   extractBtn.disabled = false;
@@ -381,10 +383,10 @@ chrome.runtime.onMessage.addListener((message) => {
     startBtn.disabled = false;
     stopBtn.disabled = true;
   } else if (message.type === 'ASSIGN_DUP_CODES') {
+    // Background sudah menjalankan loop ekstraksi sendiri (popup mungkin tertutup
+    // saat tab switch ke Gemini). Di sini hanya tampilan info.
     const codes = message.codes || [];
-    if (!codes.length) { appendLog('ℹ️ Tidak ada code duplikat dari Gemini.', 'info'); return; }
-    appendLog(`🔁 Gemini indikasi ${codes.length} duplikat. Mulai ekstraksi link...`, 'info');
-    runRoundTrip(codes);
+    appendLog(`🔁 Gemini indikasi ${codes.length} duplikat. Background sedang ekstraksi link...`, 'info');
   } else if (message.type === 'ASSIGN_DUP_NONE') {
     appendLog('⏱️ Gemini tidak indikasi duplikat dalam 90s. Round-trip selesai.', 'warning');
     setStatus('idle');

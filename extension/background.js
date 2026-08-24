@@ -17,15 +17,125 @@ function logPopup(msg, level = 'info') {
   try { chrome.runtime.sendMessage({ type: 'LOG', message: msg, level }).catch(() => {}); } catch (_) {}
 }
 
-chrome.runtime.onMessage.addListener((message) => {
+// ============================================================
+// STATE & HELPERS (round-trip diorkestrasi di background,
+// TIDAK tergantung popup — popup tertutup saat tab switch ke Gemini)
+// ============================================================
+let bgRoundTripRunning = false;
+let bgExtractStopped = false;
+
+async function getFasihTabBg() {
+  const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
+  if (tab && tab.url && tab.url.includes('fasih-sm.bps.go.id')) return tab;
+  const tabs = await chrome.tabs.query({ url: '*://fasih-sm.bps.go.id/*' });
+  return tabs[0] || null;
+}
+
+async function ensureContentLoaded(tabId) {
+  try {
+    const res = await chrome.tabs.sendMessage(tabId, { type: 'PING' });
+    if (res && res.ok) return true;
+  } catch (_) {}
+  try {
+    await chrome.scripting.executeScript({ target: { tabId }, files: ['content.js'] });
+    await new Promise((r) => setTimeout(r, 300));
+    return true;
+  } catch (err) {
+    logPopup(`❌ Gagal inject content script: ${err.message}`, 'error');
+    return false;
+  }
+}
+
+chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   if (message && message.type === 'BATCH_DONE') {
     sendToGemini(message.text || '', message);
+    return false;
   }
   if (message && message.type === 'EXTRACT_DONE') {
     sendToGemini(message.text || '', { source: 'extract' });
+    return false;
+  }
+  if (message && message.type === 'START_FASIH_EXTRACT') {
+    // Mulai loop ekstraksi FASIH di background (dipakai round-trip).
+    const codes = (message.codes || []).filter(Boolean);
+    const searchDelay = message.searchDelay || 1500;
+    const modalDelay = message.modalDelay || 2000;
+    if (!codes.length) { logPopup('ℹ️ Tidak ada code untuk diekstrak.', 'info'); return false; }
+    if (bgRoundTripRunning) { logPopup('⚠️ Round-trip masih berjalan.', 'warning'); return false; }
+    bgExtractStopped = false; // re-arm stop flag di titik mulai round-trip
+    runBgFasihExtract(codes, searchDelay, modalDelay).catch((e) => logPopup(`❌ Round-trip error: ${e.message}`, 'error'));
+    return false;
+  }
+  if (message && message.type === 'STOP_BG_EXTRACT') {
+    bgExtractStopped = true;
+    return false;
   }
   return false;
 });
+
+// ============================================================
+// LOOP EKSTRAKSI FASIH DI BACKGROUND (round-trip)
+// Mengirim NEXT_CODE ke content.js tab FASIH satu per satu, kumpulkan link,
+// lalu kirim round-2 ke Gemini. Tidak tergantung popup (popup tertutup saat
+// tab switch ke Gemini).
+// ============================================================
+async function runBgFasihExtract(codes, searchDelay, modalDelay) {
+  if (bgRoundTripRunning) return;
+  bgRoundTripRunning = true;
+  // NOTE: bgExtractStopped TIDAK di-reset di sini. Stop di-rearm di titik mulai round-trip
+  // (pollGeminiResponse / START_FASIH_EXTRACT), bukan di sini, supaya stop yang datang
+  // selama poll tidak tertimpa saat extract baru dimulai.
+  const links = [];
+  logPopup(`🔁 Round-trip (background): ekstraksi link untuk ${codes.length} code...`, 'info');
+
+  try {
+    const tab = await getFasihTabBg();
+    if (!tab) {
+      logPopup('❌ Tab FASIH tidak ditemukan untuk round-trip.', 'error');
+      return;
+    }
+    const ok = await ensureContentLoaded(tab.id);
+    if (!ok) return;
+
+    for (let i = 0; i < codes.length; i++) {
+      if (bgExtractStopped) break;
+      const code = codes[i];
+      logPopup(`▶ [${i + 1}/${codes.length}] ekstrak: ${code}`, 'info');
+      try {
+        const res = await chrome.tabs.sendMessage(tab.id, {
+          type: 'NEXT_CODE', code, searchDelay, modalDelay,
+        });
+        if (res && res.status === 'ok' && res.link) {
+          links.push(res.link);
+          logPopup(`   ✅ ${code} → ${res.uuid || '(no uuid)'} (link)`, 'success');
+        } else if (res && res.status === 'notfound') {
+          logPopup(`   ⚠️ ${code} tidak ditemukan — skip`, 'warning');
+        } else {
+          logPopup(`   ⚠️ ${code} gagal: ${res?.reason || res?.status}`, 'warning');
+        }
+      } catch (err) {
+        logPopup(`   ❌ ${code} error: ${err.message}`, 'error');
+      }
+    }
+
+    if (bgExtractStopped) {
+      logPopup('⛔ Round-trip dihentikan.', 'warning');
+      return;
+    }
+
+    const clean = links.filter(Boolean);
+    if (!clean.length) {
+      logPopup('⚠️ Tidak ada link terkumpul. Round-2 dilewati.', 'warning');
+      return;
+    }
+    const text = clean.join(' ; ');
+    logPopup(`➡️ Round 2: kirim ${clean.length} link ke Gemini (dipisah ;).`, 'success');
+    // sendToGemini dengan meta.source='extract' agar TIDAK trigger poll lagi (hindari loop).
+    sendToGemini(text, { source: 'extract' });
+  } finally {
+    bgRoundTripRunning = false;
+  }
+}
 
 // ============================================================
 // MAIN-WORLD FILL+SEND (dipanggil via executeScript { world:'MAIN' })
@@ -217,16 +327,23 @@ async function readGeminiResponse(tabId) {
 }
 
 // Poll response Gemini tiap 3 detik, maks ~90 detik. Stabil-check: 2 poll berturut-turut
-// sama (stream selesai). Ketemu codes -> ASSIGN_DUP_CODES ke popup.
+// sama (stream selesai). Ketemu codes -> mulai loop ekstraksi FASIH DI BACKGROUND
+// (bukan kirim ke popup, karena popup tertutup saat tab switch ke Gemini).
 async function pollGeminiResponse(tabId) {
   const POLL_MS = 3000;
   const DEADLINE = Date.now() + 90000;
   let lastRaw = '';
   let stableCount = 0;
+  bgExtractStopped = false; // re-arm stop flag di titik mulai round-trip (poll)
 
   logPopup('🔎 Memantau response Gemini untuk assignment_id_duplicate...', 'info');
 
   while (Date.now() < DEADLINE) {
+    if (bgExtractStopped) {
+      logPopup('⛔ Stop: round-trip dibatalkan sebelum kode ditemukan.', 'warning');
+      chrome.runtime.sendMessage({ type: 'ASSIGN_DUP_NONE' }).catch(() => {});
+      return;
+    }
     await new Promise((r) => setTimeout(r, POLL_MS));
     const r = await readGeminiResponse(tabId);
     if (!r) continue;
@@ -240,7 +357,13 @@ async function pollGeminiResponse(tabId) {
       }
       if (stableCount >= 2) {
         logPopup(`✅ Gemini indikasi ${r.codes.length} duplikat: ${r.codes.join(', ')}`, 'success');
-        chrome.runtime.sendMessage({ type: 'ASSIGN_DUP_CODES', codes: r.codes }).catch(() => {});
+        if (bgExtractStopped) {
+          logPopup('⛔ Stop: round-trip dibatalkan.', 'warning');
+          chrome.runtime.sendMessage({ type: 'ASSIGN_DUP_NONE' }).catch(() => {});
+          return;
+        }
+        // Loop ekstraksi jalan di background sendiri (tidak andalkan popup).
+        runBgFasihExtract(r.codes, 1500, 2000).catch((e) => logPopup(`❌ Round-trip error: ${e.message}`, 'error'));
         return;
       }
     }
