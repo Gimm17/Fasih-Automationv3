@@ -26,6 +26,11 @@ const logSection = $('logSection');
 const logPanel   = $('logPanel');
 const clearLogBtn = $('clearLogBtn');
 
+const extractCodesEl = $('extractCodes');
+const cfgModal       = $('cfgModal');
+const extractBtn     = $('extractBtn');
+const extractStopBtn = $('extractStopBtn');
+
 const FASIH_HOST = 'fasih-sm.bps.go.id';
 
 // ============================================================
@@ -194,6 +199,94 @@ stopBtn.addEventListener('click', async () => {
 });
 
 // ============================================================
+// EKSTRAK UUID
+// ============================================================
+function formatExtractOutput(dataAcuan, results) {
+  const acuan = (String(dataAcuan || '')).trim();
+  const lines = results.map((r) => {
+    if (r.status === 'ok') return `${r.code} - ${r.nama || ''} - ${r.uuid}`;
+    if (r.status === 'notfound') return `${r.code} - [TIDAK DITEMUKAN]`;
+    return `${r.code} - ${r.nama || ''} - [GAGAL EKSTRAK]`;
+  });
+  const parts = [];
+  if (acuan) parts.push(`"DATA ACUAN"\n${acuan}`);
+  parts.push(`"UUID ASSIGNMENT (hasil ekstrak):"\n${lines.join('\n')}`);
+  return parts.join('\n\n');
+}
+
+extractBtn.addEventListener('click', async () => {
+  const raw = extractCodesEl.value.trim();
+  if (!raw) { appendLog('❌ Paste minimal 1 code usaha dulu.', 'error'); return; }
+  const codes = raw.split(/\n+/).map((s) => s.trim()).filter(Boolean);
+  if (!codes.length) { appendLog('❌ Tidak ada code valid.', 'error'); return; }
+
+  const tab = await getFasihTab();
+  if (!tab) { appendLog('❌ Tab FASIH tidak ditemukan. Buka fasih-sm.bps.go.id dulu.', 'error'); return; }
+  const ok = await ensureContent(tab.id);
+  if (!ok) return;
+
+  const searchDelay = parseInt(cfgSearch.value, 10) || 1500;
+  const modalDelay = parseInt(cfgModal.value, 10) || 2000;
+
+  setStatus('running');
+  extractBtn.disabled = true;
+  extractStopBtn.disabled = false;
+  progressSection.style.display = '';
+  updateProgress(0, codes.length, 'Memulai ekstrak...');
+
+  appendLog(`🚀 Ekstrak UUID: ${codes.length} code (delay search ${searchDelay}ms, modal ${modalDelay}ms).`, 'info');
+
+  const results = [];
+  let stopped = false;
+  for (let i = 0; i < codes.length; i++) {
+    if (stopped) break;
+    const code = codes[i];
+    updateProgress(i, codes.length, `[${i + 1}/${codes.length}] ${code}`);
+    appendLog(`▶ [${i + 1}/${codes.length}] ekstrak: ${code}`, 'info');
+    try {
+      const res = await chrome.tabs.sendMessage(tab.id, {
+        type: 'NEXT_CODE', code, searchDelay, modalDelay,
+      });
+      if (res && res.status === 'ok') {
+        appendLog(`   ✅ ${code} → ${res.uuid}`, 'success');
+      } else if (res && res.status === 'notfound') {
+        appendLog(`   ⚠️ ${code} tidak ditemukan — skip`, 'warning');
+      } else {
+        appendLog(`   ⚠️ ${code} gagal: ${res?.reason || res?.status}`, 'warning');
+      }
+      results.push(res || { code, status: 'skip' });
+    } catch (err) {
+      appendLog(`   ❌ ${code} error: ${err.message}`, 'error');
+      results.push({ code, status: 'skip', reason: err.message });
+    }
+  }
+
+  updateProgress(codes.length, codes.length, 'Selesai');
+  setStatus('done');
+  extractBtn.disabled = false;
+  extractStopBtn.disabled = true;
+
+  const text = formatExtractOutput(dataAcuanEl.value, results);
+  const okCount = results.filter((r) => r.status === 'ok').length;
+  appendLog(`🏁 Ekstrak selesai: ${okCount}/${codes.length} UUID dapat. Mengirim ke Gemini...`, 'success');
+
+  try {
+    await chrome.runtime.sendMessage({ type: 'EXTRACT_DONE', text });
+  } catch (err) {
+    appendLog(`❌ Gagal kirim ke background: ${err.message}`, 'error');
+  }
+});
+
+extractStopBtn.addEventListener('click', async () => {
+  const tab = await getFasihTab();
+  if (tab) chrome.tabs.sendMessage(tab.id, { type: 'STOP_EXTRACT' }).catch(() => {});
+  appendLog('⛔ Stop ekstrak diminta.', 'warning');
+  setStatus('stopped');
+  extractBtn.disabled = false;
+  extractStopBtn.disabled = true;
+});
+
+// ============================================================
 // PESAN MASUK (dari content/background)
 // ============================================================
 chrome.runtime.onMessage.addListener((message) => {
@@ -223,7 +316,7 @@ chrome.runtime.onMessage.addListener((message) => {
 // ============================================================
 // PERSIST (Data Acuan & keyword agar tidak hilang saat popup ditutup)
 // ============================================================
-const PERSIST_KEYS = ['dataAcuan', 'keywords', 'cfgSearch'];
+const PERSIST_KEYS = ['dataAcuan', 'keywords', 'cfgSearch', 'extractCodes', 'cfgModal'];
 function savePersist() {
   const obj = {};
   PERSIST_KEYS.forEach((k) => {
@@ -248,6 +341,8 @@ function savePersist() {
       if (fasihQC.dataAcuan != null) dataAcuanEl.value = fasihQC.dataAcuan;
       if (fasihQC.keywords != null) keywordsEl.value = fasihQC.keywords;
       if (fasihQC.cfgSearch != null) cfgSearch.value = fasihQC.cfgSearch;
+      if (fasihQC.extractCodes != null) extractCodesEl.value = fasihQC.extractCodes;
+      if (fasihQC.cfgModal != null) cfgModal.value = fasihQC.cfgModal;
     }
   } catch (_) {}
 
