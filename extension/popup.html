@@ -52,6 +52,22 @@
     </div>
   </section>
 
+  <section class="section">
+    <div class="section-title">Ekstrak UUID Assignment</div>
+    <p class="hint">Paste daftar <b>code usaha terindikasi duplikat</b> dari jawaban Gemini (satu per baris). Extension cari tiap code di FASIH, buka detail, ekstrak UUID, lalu kirim ulang ke Gemini.</p>
+    <textarea id="extractCodes" rows="5" placeholder="Satu code per baris, contoh:&#10;7271030002000300&#10;7271020008003401"></textarea>
+
+    <div class="config-row">
+      <label for="cfgModal">Delay modal (ms)</label>
+      <input type="number" id="cfgModal" value="2000" min="500" step="100">
+    </div>
+
+    <div class="controls">
+      <button class="btn btn-primary" id="extractBtn">▶&nbsp; Ekstrak UUID</button>
+      <button class="btn btn-danger" id="extractStopBtn" disabled>⏹&nbsp; Stop</button>
+    </div>
+  </section>
+
   <section class="section" id="progressSection" style="display:none">
     <div class="progress-bar-wrap">
       <div class="progress-bar" id="progressBar"></div>
