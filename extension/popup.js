@@ -202,6 +202,8 @@ stopBtn.addEventListener('click', async () => {
 // EKSTRAK UUID
 // ============================================================
 let extractStopped = false;
+let roundTripRunning = false;
+let roundTripLinks = [];
 
 function formatExtractOutput(dataAcuan, results) {
   const acuan = (String(dataAcuan || '')).trim();
@@ -214,6 +216,35 @@ function formatExtractOutput(dataAcuan, results) {
   if (acuan) parts.push(`"DATA ACUAN"\n${acuan}`);
   parts.push(`"UUID ASSIGNMENT (hasil ekstrak):"\n${lines.join('\n')}`);
   return parts.join('\n\n');
+}
+
+async function runExtractLoop(tab, codes, searchDelay, modalDelay, onResult) {
+  const results = [];
+  for (let i = 0; i < codes.length; i++) {
+    if (extractStopped) break;
+    const code = codes[i];
+    updateProgress(i, codes.length, `[${i + 1}/${codes.length}] ${code}`);
+    appendLog(`▶ [${i + 1}/${codes.length}] ekstrak: ${code}`, 'info');
+    try {
+      const res = await chrome.tabs.sendMessage(tab.id, {
+        type: 'NEXT_CODE', code, searchDelay, modalDelay,
+      });
+      if (res && res.status === 'ok') {
+        appendLog(`   ✅ ${code} → ${res.uuid || '(no uuid)'}${res.link ? ' (link)' : ''}`, 'success');
+      } else if (res && res.status === 'notfound') {
+        appendLog(`   ⚠️ ${code} tidak ditemukan — skip`, 'warning');
+      } else {
+        appendLog(`   ⚠️ ${code} gagal: ${res?.reason || res?.status}`, 'warning');
+      }
+      results.push(res || { code, status: 'skip' });
+      if (onResult) onResult(res, code);
+    } catch (err) {
+      appendLog(`   ❌ ${code} error: ${err.message}`, 'error');
+      results.push({ code, status: 'skip', reason: err.message });
+    }
+  }
+  updateProgress(codes.length, codes.length, 'Selesai');
+  return results;
 }
 
 extractBtn.addEventListener('click', async () => {
@@ -241,31 +272,8 @@ extractBtn.addEventListener('click', async () => {
   appendLog(`🚀 Ekstrak UUID: ${codes.length} code (delay search ${searchDelay}ms, modal ${modalDelay}ms).`, 'info');
 
   extractStopped = false;
-  const results = [];
-  for (let i = 0; i < codes.length; i++) {
-    if (extractStopped) break;
-    const code = codes[i];
-    updateProgress(i, codes.length, `[${i + 1}/${codes.length}] ${code}`);
-    appendLog(`▶ [${i + 1}/${codes.length}] ekstrak: ${code}`, 'info');
-    try {
-      const res = await chrome.tabs.sendMessage(tab.id, {
-        type: 'NEXT_CODE', code, searchDelay, modalDelay,
-      });
-      if (res && res.status === 'ok') {
-        appendLog(`   ✅ ${code} → ${res.uuid}`, 'success');
-      } else if (res && res.status === 'notfound') {
-        appendLog(`   ⚠️ ${code} tidak ditemukan — skip`, 'warning');
-      } else {
-        appendLog(`   ⚠️ ${code} gagal: ${res?.reason || res?.status}`, 'warning');
-      }
-      results.push(res || { code, status: 'skip' });
-    } catch (err) {
-      appendLog(`   ❌ ${code} error: ${err.message}`, 'error');
-      results.push({ code, status: 'skip', reason: err.message });
-    }
-  }
+  const results = await runExtractLoop(tab, codes, searchDelay, modalDelay);
 
-  updateProgress(codes.length, codes.length, 'Selesai');
   setStatus('done');
   extractBtn.disabled = false;
   extractStopBtn.disabled = true;
@@ -291,6 +299,60 @@ extractStopBtn.addEventListener('click', async () => {
   extractStopBtn.disabled = true;
 });
 
+async function runRoundTrip(codes) {
+  if (roundTripRunning) { appendLog('⚠️ Round-trip sudah berjalan.', 'warning'); return; }
+  roundTripRunning = true;
+  extractStopped = false;
+  roundTripLinks = [];
+
+  const tab = await getFasihTab();
+  if (!tab) {
+    appendLog('❌ Tab FASIH tidak ditemukan untuk round-trip.', 'error');
+    roundTripRunning = false;
+    return;
+  }
+  const ok = await ensureContent(tab.id);
+  if (!ok) { roundTripRunning = false; return; }
+
+  const searchDelay = parseInt(cfgSearch.value, 10) || 1500;
+  const modalDelay = parseInt(cfgModal.value, 10) || 2000;
+
+  setStatus('running');
+  extractBtn.disabled = true;
+  extractStopBtn.disabled = false;
+  progressSection.style.display = '';
+  updateProgress(0, codes.length, 'Memulai round-trip...');
+
+  appendLog(`🔁 Round-trip: ekstraksi link untuk ${codes.length} code...`, 'info');
+
+  await runExtractLoop(tab, codes, searchDelay, modalDelay, (res) => {
+    if (res && res.status === 'ok' && res.link) roundTripLinks.push(res.link);
+  });
+
+  setStatus('done');
+  extractBtn.disabled = false;
+  extractStopBtn.disabled = true;
+  roundTripRunning = false;
+
+  if (extractStopped) {
+    appendLog('⛔ Round-trip dihentikan.', 'warning');
+    return;
+  }
+
+  const links = roundTripLinks.filter(Boolean);
+  if (!links.length) {
+    appendLog('⚠️ Tidak ada link terkumpul. Round-2 dilewati.', 'warning');
+    return;
+  }
+  const text = links.join(' ; ');
+  appendLog(`➡️ Round 2: kirim ${links.length} link ke Gemini (dipisah ;).`, 'success');
+  try {
+    await chrome.runtime.sendMessage({ type: 'EXTRACT_DONE', text });
+  } catch (err) {
+    appendLog(`❌ Gagal kirim round-2: ${err.message}`, 'error');
+  }
+}
+
 // ============================================================
 // PESAN MASUK (dari content/background)
 // ============================================================
@@ -315,6 +377,14 @@ chrome.runtime.onMessage.addListener((message) => {
     setStatus('stopped');
     startBtn.disabled = false;
     stopBtn.disabled = true;
+  } else if (message.type === 'ASSIGN_DUP_CODES') {
+    const codes = message.codes || [];
+    if (!codes.length) { appendLog('ℹ️ Tidak ada code duplikat dari Gemini.', 'info'); return; }
+    appendLog(`🔁 Gemini indikasi ${codes.length} duplikat. Mulai ekstraksi link...`, 'info');
+    runRoundTrip(codes);
+  } else if (message.type === 'ASSIGN_DUP_NONE') {
+    appendLog('⏱️ Gemini tidak indikasi duplikat dalam 90s. Round-trip selesai.', 'warning');
+    setStatus('idle');
   }
 });
 
