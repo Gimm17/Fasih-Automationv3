@@ -32,6 +32,9 @@
     text = (document.body.innerText || '').replace(/\s+/g, ' ');
   }
 
+  // Buang markdown bold (**) — Gemini sering bold label: "**assignment_id_duplicate:**".
+  text = text.replace(/\*\*/g, ' ');
+
   // Regex: assignment_id_duplicate: <16 digit>(; <16 digit>)*  (toleransi spasi/newline sekitar ;)
   const re = /assignment_id_duplicate\s*:\s*([0-9]{16}(?:\s*[;,]\s*[0-9]{16})*)/i;
   const m = text.match(re);
