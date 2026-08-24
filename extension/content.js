@@ -130,13 +130,18 @@ function extractAssignmentIdFromReviewUrl(url) {
 }
 
 // Intercept window.open dari page-context (fallback ekstrak link Review).
+// Guard: popup.js dapat re-inject content.js (PING gagal) -> cegah listener
+// dobel & re-deklarasi let.
 let capturedWindowOpenUrl = '';
-window.addEventListener('message', (event) => {
-  if (event.source !== window) return;
-  if (event.data && event.data.type === 'FASIH_CAPTURED_OPEN_URL') {
-    capturedWindowOpenUrl = String(event.data.url || '');
-  }
-});
+if (!window.__fasih_content_msg_listener) {
+  window.__fasih_content_msg_listener = true;
+  window.addEventListener('message', (event) => {
+    if (event.source !== window) return;
+    if (event.data && event.data.type === 'FASIH_CAPTURED_OPEN_URL') {
+      capturedWindowOpenUrl = String(event.data.url || '');
+    }
+  });
+}
 (function loadInterceptorScript() {
   if (document.getElementById('fasih-interceptor-script')) return;
   try {
