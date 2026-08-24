@@ -184,6 +184,11 @@ async function sendToGemini(text, meta) {
     if (r && r.ok && r.sent) {
       logPopup(`✅ Terkirim ke Gemini ✔${r.hasButton ? '' : ' (via Enter)'}`, 'success');
       badge('✓', '#22c55e');
+      // Mulai round-trip: poll response Gemini untuk assignment_id_duplicate.
+      // Hanya round-1 (meta.source !== 'extract'); round-2 tidak poll lagi (hindari loop).
+      if (!meta || meta.source !== 'extract') {
+        pollGeminiResponse(tab.id).catch((e) => logPopup(`⚠️ Poll error: ${e.message}`, 'warning'));
+      }
     } else if (r && r.ok && !r.sent) {
       logPopup('⚠️ Teks masuk tapi gagal kirim. Klik send manual.', 'warning');
       badge('½', '#f59e0b');
@@ -195,4 +200,52 @@ async function sendToGemini(text, meta) {
     logPopup(`❌ Inject Gemini gagal: ${err.message}`, 'error');
     badge('✖', '#d93025');
   }
+}
+
+async function readGeminiResponse(tabId) {
+  try {
+    const [res] = await chrome.scripting.executeScript({
+      target: { tabId },
+      world: 'MAIN',
+      files: ['gemini-read.js'],
+    });
+    return res && res.result;
+  } catch (err) {
+    logPopup(`⚠️ Gagal baca Gemini: ${err.message}`, 'warning');
+    return null;
+  }
+}
+
+// Poll response Gemini tiap 3 detik, maks ~90 detik. Stabil-check: 2 poll berturut-turut
+// sama (stream selesai). Ketemu codes -> ASSIGN_DUP_CODES ke popup.
+async function pollGeminiResponse(tabId) {
+  const POLL_MS = 3000;
+  const DEADLINE = Date.now() + 90000;
+  let lastRaw = '';
+  let stableCount = 0;
+
+  logPopup('🔎 Memantau response Gemini untuk assignment_id_duplicate...', 'info');
+
+  while (Date.now() < DEADLINE) {
+    await new Promise((r) => setTimeout(r, POLL_MS));
+    const r = await readGeminiResponse(tabId);
+    if (!r) continue;
+
+    if (r.found && r.codes.length) {
+      if (r.raw === lastRaw) {
+        stableCount++;
+      } else {
+        stableCount = 1;
+        lastRaw = r.raw;
+      }
+      if (stableCount >= 2) {
+        logPopup(`✅ Gemini indikasi ${r.codes.length} duplikat: ${r.codes.join(', ')}`, 'success');
+        chrome.runtime.sendMessage({ type: 'ASSIGN_DUP_CODES', codes: r.codes }).catch(() => {});
+        return;
+      }
+    }
+  }
+
+  logPopup('⏱️ Tidak ada assignment_id_duplicate terdeteksi dalam 90 detik. Selesai.', 'warning');
+  chrome.runtime.sendMessage({ type: 'ASSIGN_DUP_NONE' }).catch(() => {});
 }
