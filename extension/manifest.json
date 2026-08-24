@@ -31,5 +31,11 @@
       "js": ["content.js"],
       "run_at": "document_idle"
     }
+  ],
+  "web_accessible_resources": [
+    {
+      "resources": ["interceptor.js"],
+      "matches": ["https://fasih-sm.bps.go.id/*"]
+    }
   ]
 }
