@@ -201,6 +201,8 @@ stopBtn.addEventListener('click', async () => {
 // ============================================================
 // EKSTRAK UUID
 // ============================================================
+let extractStopped = false;
+
 function formatExtractOutput(dataAcuan, results) {
   const acuan = (String(dataAcuan || '')).trim();
   const lines = results.map((r) => {
@@ -236,10 +238,10 @@ extractBtn.addEventListener('click', async () => {
 
   appendLog(`🚀 Ekstrak UUID: ${codes.length} code (delay search ${searchDelay}ms, modal ${modalDelay}ms).`, 'info');
 
+  extractStopped = false;
   const results = [];
-  let stopped = false;
   for (let i = 0; i < codes.length; i++) {
-    if (stopped) break;
+    if (extractStopped) break;
     const code = codes[i];
     updateProgress(i, codes.length, `[${i + 1}/${codes.length}] ${code}`);
     appendLog(`▶ [${i + 1}/${codes.length}] ekstrak: ${code}`, 'info');
@@ -278,6 +280,7 @@ extractBtn.addEventListener('click', async () => {
 });
 
 extractStopBtn.addEventListener('click', async () => {
+  extractStopped = true;
   const tab = await getFasihTab();
   if (tab) chrome.tabs.sendMessage(tab.id, { type: 'STOP_EXTRACT' }).catch(() => {});
   appendLog('⛔ Stop ekstrak diminta.', 'warning');
