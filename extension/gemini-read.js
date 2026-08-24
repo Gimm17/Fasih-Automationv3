@@ -8,7 +8,7 @@
 'use strict';
 
 (function () {
-  // Kumpulkan teks response Gemini dari container umum, fallback document body.
+  // Kumpulkan elemen response Gemini dari selector umum.
   const candidates = [];
   const sels = [
     'model-response',
@@ -24,29 +24,47 @@
     } catch (_) {}
   }
 
-  // Ambil teks gabungan: kandidat terakhir (asumsi chat terbaru di bawah), fallback body.
-  let text = '';
-  if (candidates.length) {
-    text = (candidates[candidates.length - 1].innerText || '').replace(/\s+/g, ' ');
-  } else {
-    text = (document.body.innerText || '').replace(/\s+/g, ' ');
-  }
-
-  // Buang markdown bold (**) — Gemini sering bold label: "**assignment_id_duplicate:**".
-  text = text.replace(/\*\*/g, ' ');
-
   // Regex: assignment_id_duplicate: <16 digit>(; <16 digit>)*  (toleransi spasi/newline sekitar ;)
   const re = /assignment_id_duplicate\s*:\s*([0-9]{16}(?:\s*[;,]\s*[0-9]{16})*)/i;
-  const m = text.match(re);
+
+  // Ambil teks satu elemen, strip markdown bold, cocokkan regex.
+  const matchIn = (el) => {
+    const t = (el.innerText || '').replace(/\s+/g, ' ').replace(/\*\*/g, ' ');
+    const mm = t.match(re);
+    return mm ? { raw: mm[0], codesStr: mm[1] } : null;
+  };
+
+  // Pilih elemen TERKECIL yang mengandung pola = turn terbaru/spesifik, BUKAN wrapper
+  // conversation (yang berisi semua turn lama -> bisa re-match assignment_id_duplicate
+  // dari jawaban sebelumnya). Urutkan ascending by text length, ambil yang pertama match.
+  let match = null;
+  if (candidates.length) {
+    const withMatch = candidates
+      .map((el) => ({ el, hit: matchIn(el) }))
+      .filter((x) => x.hit);
+    if (withMatch.length) {
+      withMatch.sort((a, b) => {
+        const la = (a.el.innerText || '').length;
+        const lb = (b.el.innerText || '').length;
+        return la - lb; // terkecil dulu = paling spesifik (turn tunggal)
+      });
+      match = withMatch[0].hit;
+    }
+  }
+  // Fallback: document body (kasus selector tidak ketemu sama sekali).
+  if (!match) {
+    const bodyHit = matchIn(document.body);
+    if (bodyHit) match = bodyHit;
+  }
 
   let codes = [];
-  if (m && m[1]) {
-    codes = m[1].split(/[;,]/).map((s) => s.trim()).filter((s) => /^\d{16}$/.test(s));
+  if (match && match.codesStr) {
+    codes = match.codesStr.split(/[;,]/).map((s) => s.trim()).filter((s) => /^\d{16}$/.test(s));
   }
 
   // Dedup, urutan pertama muncul.
   const seen = new Set();
   codes = codes.filter((c) => (seen.has(c) ? false : (seen.add(c), true)));
 
-  return { found: codes.length > 0, codes, raw: m ? m[0] : '' };
+  return { found: codes.length > 0, codes, raw: match ? match.raw : '' };
 })();
