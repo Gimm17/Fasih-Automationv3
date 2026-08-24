@@ -19,6 +19,7 @@
 const state = {
   batchRunning: false,
   shouldStop:   false,
+  shouldStopExtract: false,
 };
 
 const delay = (ms) => new Promise((r) => setTimeout(r, ms));
@@ -103,6 +104,137 @@ async function getFreshSearchInput(timeout = 8000) {
     await delay(300);
   }
   return null;
+}
+
+// ============================================================
+// DETAIL / REVIEW EXTRACTION (dari FASIH-AUTOMATION/content.js)
+// ============================================================
+function isUUID(str) {
+  return /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(String(str || '').trim());
+}
+
+function extractAssignmentIdFromReviewUrl(url) {
+  if (!url) return '';
+  const clean = String(url).split('?')[0].split('#')[0];
+  const parts = clean.split('/').filter((p) => p.length > 0);
+  const assignIdx = parts.indexOf('assignment');
+  if (assignIdx !== -1 && parts.length > assignIdx + 2) {
+    const candidate = parts[assignIdx + 2];
+    if (isUUID(candidate)) return candidate;
+  }
+  const lastPart = parts[parts.length - 1];
+  if (isUUID(lastPart)) return lastPart;
+  const uuids = url.match(/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/gi);
+  if (uuids && uuids.length >= 2) return uuids[uuids.length - 1];
+  return uuids && uuids.length === 1 ? uuids[0] : '';
+}
+
+// Intercept window.open dari page-context (fallback ekstrak link Review).
+let capturedWindowOpenUrl = '';
+window.addEventListener('message', (event) => {
+  if (event.source !== window) return;
+  if (event.data && event.data.type === 'FASIH_CAPTURED_OPEN_URL') {
+    capturedWindowOpenUrl = String(event.data.url || '');
+  }
+});
+(function loadInterceptorScript() {
+  if (document.getElementById('fasih-interceptor-script')) return;
+  try {
+    const script = document.createElement('script');
+    script.id = 'fasih-interceptor-script';
+    script.src = chrome.runtime.getURL('interceptor.js');
+    (document.head || document.documentElement).appendChild(script);
+  } catch (_) {}
+})();
+
+function clickElement(el) {
+  if (!el) return;
+  if (el.tagName === 'A') {
+    el.addEventListener('click', (e) => e.preventDefault(), { once: true, capture: true });
+  }
+  el.focus();
+  el.dispatchEvent(new MouseEvent('mousedown', { bubbles: true, cancelable: true }));
+  el.dispatchEvent(new MouseEvent('mouseup', { bubbles: true, cancelable: true }));
+  el.click();
+}
+
+function findReviewButton() {
+  const bySource = document.querySelector('button[data-tsd-source*="assignment-action"]');
+  if (bySource && bySource.textContent.includes('Review')) return bySource;
+  const allClickables = document.querySelectorAll('button, a');
+  for (const el of allClickables) {
+    const txt = el.textContent?.trim() || '';
+    if (txt === 'Review' || txt.includes('Review')) return el;
+  }
+  const telegramIcons = document.querySelectorAll('svg.tabler-icon-brand-telegram');
+  for (const svg of telegramIcons) {
+    const parentBtn = svg.closest('button') || svg.closest('a');
+    if (parentBtn) return parentBtn;
+  }
+  return null;
+}
+
+async function waitForReviewButton(timeout = 10000) {
+  const start = Date.now();
+  while (Date.now() - start < timeout) {
+    const btn = findReviewButton();
+    if (btn) return btn;
+    await delay(250);
+  }
+  return null;
+}
+
+function closeDetailModal() {
+  const xIcons = document.querySelectorAll('svg.tabler-icon-x');
+  for (const svg of xIcons) {
+    const btn = svg.closest('button');
+    if (btn) { clickElement(btn); return true; }
+  }
+  for (const span of document.querySelectorAll('span')) {
+    if (span.textContent?.trim() === 'Close') {
+      const btn = span.closest('button');
+      if (btn) { clickElement(btn); return true; }
+    }
+  }
+  const closeBtn = document.querySelector('button.f\\:top-4.f\\:right-4') ||
+                   document.querySelector('button[class*="top-4"][class*="right-4"]');
+  if (closeBtn) { clickElement(closeBtn); return true; }
+  document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', code: 'Escape', bubbles: true, cancelable: true }));
+  return false;
+}
+
+function extractReviewLinkAddress(reviewBtn, cardContainer) {
+  const elements = [reviewBtn, cardContainer, document.querySelector('[role="dialog"]'), document.querySelector('[data-state="open"]')];
+  for (const el of elements) {
+    if (!el) continue;
+    const anchor = el.closest?.('a') || el.querySelector?.('a') || (el.tagName === 'A' ? el : null);
+    if (anchor && anchor.href && anchor.href.includes('/assignment/')) return anchor.href;
+    const anyLink = el.querySelector?.('a[href*="/assignment/"]') || el.querySelector?.('a[href*="/data/"]');
+    if (anyLink && anyLink.href) return anyLink.href;
+    const attrs = ['href', 'data-href', 'data-url', 'to', 'action', 'data-link'];
+    for (const attr of attrs) {
+      const val = el.getAttribute?.(attr);
+      if (val && val.includes('/assignment/')) return val;
+    }
+    for (const key of Object.keys(el)) {
+      if (key.startsWith('__reactFiber$') || key.startsWith('__reactInternalInstance$') || key.startsWith('__reactProps$')) {
+        const fiber = el[key];
+        const checkProps = (p) => {
+          if (!p) return '';
+          if (typeof p.href === 'string' && p.href.includes('/assignment/')) return p.href;
+          if (typeof p.to === 'string' && p.to.includes('/assignment/')) return p.to;
+          if (typeof p.url === 'string' && p.url.includes('/assignment/')) return p.url;
+          if (p.assignmentId) return `/app/assignment/${p.assignmentId}`;
+          if (p.assignment?.id) return `/app/assignment/${p.assignment.id}`;
+          if (p.data?.id) return `/app/assignment/${p.data.id}`;
+          return '';
+        };
+        const res = checkProps(fiber?.memoizedProps) || checkProps(fiber?.pendingProps) || checkProps(fiber?.return?.memoizedProps);
+        if (res) return res;
+      }
+    }
+  }
+  return '';
 }
 
 // ============================================================
