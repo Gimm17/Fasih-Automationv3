@@ -581,6 +581,11 @@ async function doExtractCode(code, searchDelay, modalDelay) {
   let reviewUrl = reviewBtn ? extractReviewLinkAddress(reviewBtn, document.body) : '';
   if (!reviewUrl) reviewUrl = extractReviewLinkAddress(btnEl, btnEl);
 
+  // Absolute-kan URL relative dari React props (mis. "/app/assignment/.../...").
+  if (reviewUrl && reviewUrl.startsWith('/')) {
+    reviewUrl = 'https://fasih-sm.bps.go.id' + reviewUrl;
+  }
+
   let uuid = reviewUrl ? extractAssignmentIdFromReviewUrl(reviewUrl) : '';
 
   // 5. Fallback: klik Review + tangkap window.open.
@@ -589,7 +594,11 @@ async function doExtractCode(code, searchDelay, modalDelay) {
     clickElement(reviewBtn);
     await delay(1200);
     const openUrl = capturedWindowOpenUrl;
-    if (openUrl) uuid = extractAssignmentIdFromReviewUrl(openUrl);
+    if (openUrl) {
+      const abs = openUrl.startsWith('/') ? 'https://fasih-sm.bps.go.id' + openUrl : openUrl;
+      uuid = extractAssignmentIdFromReviewUrl(abs);
+      if (!reviewUrl) reviewUrl = abs;
+    }
   }
 
   // 6. Tutup modal.
@@ -597,8 +606,9 @@ async function doExtractCode(code, searchDelay, modalDelay) {
   await delay(400);
 
   const nama = card.nama || '';
-  if (isUUID(uuid)) return { code, nama, uuid, status: 'ok' };
-  return { code, nama, status: 'skip', reason: 'UUID tidak ter-ekstrak' };
+  if (reviewUrl) return { code, nama, uuid, link: reviewUrl, status: 'ok' };
+  if (isUUID(uuid)) return { code, nama, uuid, link: '', status: 'ok' };
+  return { code, nama, status: 'skip', reason: 'UUID/link tidak ter-ekstrak' };
 }
 
 // ============================================================
