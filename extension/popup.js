@@ -255,6 +255,8 @@ extractBtn.addEventListener('click', async () => {
     .filter(Boolean);
   if (!codes.length) { appendLog('❌ Tidak ada code valid.', 'error'); return; }
 
+  if (roundTripRunning) { appendLog('⚠️ Round-trip masih berjalan. Tunggu selesai.', 'warning'); return; }
+
   const tab = await getFasihTab();
   if (!tab) { appendLog('❌ Tab FASIH tidak ditemukan. Buka fasih-sm.bps.go.id dulu.', 'error'); return; }
   const ok = await ensureContent(tab.id);
@@ -304,52 +306,53 @@ async function runRoundTrip(codes) {
   roundTripRunning = true;
   extractStopped = false;
   roundTripLinks = [];
-
-  const tab = await getFasihTab();
-  if (!tab) {
-    appendLog('❌ Tab FASIH tidak ditemukan untuk round-trip.', 'error');
-    roundTripRunning = false;
-    return;
-  }
-  const ok = await ensureContent(tab.id);
-  if (!ok) { roundTripRunning = false; return; }
-
-  const searchDelay = parseInt(cfgSearch.value, 10) || 1500;
-  const modalDelay = parseInt(cfgModal.value, 10) || 2000;
-
-  setStatus('running');
-  extractBtn.disabled = true;
-  extractStopBtn.disabled = false;
-  progressSection.style.display = '';
-  updateProgress(0, codes.length, 'Memulai round-trip...');
-
-  appendLog(`🔁 Round-trip: ekstraksi link untuk ${codes.length} code...`, 'info');
-
-  await runExtractLoop(tab, codes, searchDelay, modalDelay, (res) => {
-    if (res && res.status === 'ok' && res.link) roundTripLinks.push(res.link);
-  });
-
-  setStatus('done');
-  extractBtn.disabled = false;
-  extractStopBtn.disabled = true;
-  roundTripRunning = false;
-
-  if (extractStopped) {
-    appendLog('⛔ Round-trip dihentikan.', 'warning');
-    return;
-  }
-
-  const links = roundTripLinks.filter(Boolean);
-  if (!links.length) {
-    appendLog('⚠️ Tidak ada link terkumpul. Round-2 dilewati.', 'warning');
-    return;
-  }
-  const text = links.join(' ; ');
-  appendLog(`➡️ Round 2: kirim ${links.length} link ke Gemini (dipisah ;).`, 'success');
   try {
-    await chrome.runtime.sendMessage({ type: 'EXTRACT_DONE', text });
-  } catch (err) {
-    appendLog(`❌ Gagal kirim round-2: ${err.message}`, 'error');
+    const tab = await getFasihTab();
+    if (!tab) {
+      appendLog('❌ Tab FASIH tidak ditemukan untuk round-trip.', 'error');
+      return;
+    }
+    const ok = await ensureContent(tab.id);
+    if (!ok) return;
+
+    const searchDelay = parseInt(cfgSearch.value, 10) || 1500;
+    const modalDelay = parseInt(cfgModal.value, 10) || 2000;
+
+    setStatus('running');
+    extractBtn.disabled = true;
+    extractStopBtn.disabled = false;
+    progressSection.style.display = '';
+    updateProgress(0, codes.length, 'Memulai round-trip...');
+
+    appendLog(`🔁 Round-trip: ekstraksi link untuk ${codes.length} code...`, 'info');
+
+    await runExtractLoop(tab, codes, searchDelay, modalDelay, (res) => {
+      if (res && res.status === 'ok' && res.link) roundTripLinks.push(res.link);
+    });
+
+    setStatus(extractStopped ? 'stopped' : 'done');
+    extractBtn.disabled = false;
+    extractStopBtn.disabled = true;
+
+    if (extractStopped) {
+      appendLog('⛔ Round-trip dihentikan.', 'warning');
+      return;
+    }
+
+    const links = roundTripLinks.filter(Boolean);
+    if (!links.length) {
+      appendLog('⚠️ Tidak ada link terkumpul. Round-2 dilewati.', 'warning');
+      return;
+    }
+    const text = links.join(' ; ');
+    appendLog(`➡️ Round 2: kirim ${links.length} link ke Gemini (dipisah ;).`, 'success');
+    try {
+      await chrome.runtime.sendMessage({ type: 'EXTRACT_DONE', text });
+    } catch (err) {
+      appendLog(`❌ Gagal kirim round-2: ${err.message}`, 'error');
+    }
+  } finally {
+    roundTripRunning = false;
   }
 }
 
