@@ -577,7 +577,7 @@ async function doExtractCode(code, searchDelay, modalDelay) {
   await delay(modalDelay);
 
   // 4. Tunggu tombol Review di modal.
-  const reviewBtn = await waitForReviewButton(modalDelay || 8000);
+  const reviewBtn = await waitForReviewButton(Math.max(8000, modalDelay));
   let reviewUrl = reviewBtn ? extractReviewLinkAddress(reviewBtn, document.body) : '';
   if (!reviewUrl) reviewUrl = extractReviewLinkAddress(btnEl, btnEl);
 
