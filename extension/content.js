@@ -525,6 +525,83 @@ async function doBatch(keywords, searchDelay, dataAcuan) {
 }
 
 // ============================================================
+// MODE EKSTRAK UUID
+// ============================================================
+async function findCardForCode(targetCode) {
+  // Pakai collectCards untuk dapat semua kartu ter-render, cari yang cocok.
+  const map = new Map();
+  collectCards(map);
+  const normTarget = normalizeCode(targetCode);
+  for (const entry of map.values()) {
+    const entryTitleCode = normalizeCode(extractCodeFromText(entry.title || ''));
+    if (entryTitleCode === normTarget || entry.code === normTarget) {
+      return entry;
+    }
+  }
+  // Fallback: cari tombol judul yang teksnya diawali code target.
+  const btns = Array.from(document.querySelectorAll('button[data-tsd-source*="assignment-list-item"]'));
+  for (const b of btns) {
+    const t = (b.textContent || '').replace(/\s+/g, ' ').trim();
+    if (t.startsWith(targetCode)) {
+      return { title: t };
+    }
+  }
+  return null;
+}
+
+async function doExtractCode(code, searchDelay, modalDelay) {
+  const target = (String(code || '')).trim();
+  if (!target) return { code, status: 'skip', reason: 'code kosong' };
+
+  // 1. Search code di FASIH.
+  const input = await getFreshSearchInput();
+  if (!input) return { code, status: 'skip', reason: 'field search tidak ditemukan' };
+  setInputValue(input, '');
+  await delay(200);
+  setInputValue(input, target);
+  await delay(searchDelay);
+
+  // 2. Cari kartu untuk code ini.
+  //    Scroll sekali untuk pastikan render (daftar pendek biasanya langsung ada).
+  const scrollMap = new Map();
+  await autoScrollAll(scrollMap);
+  const card = await findCardForCode(target);
+  if (!card) return { code, status: 'notfound' };
+
+  // 3. Klik tombol judul kartu untuk buka modal detail.
+  const btnEl = card.btn ||
+    Array.from(document.querySelectorAll('button[data-tsd-source*="assignment-list-item"]'))
+      .find((b) => (b.textContent || '').trim().startsWith(target));
+  if (!btnEl) return { code, status: 'skip', reason: 'tombol kartu tidak ditemukan' };
+  clickElement(btnEl);
+  await delay(modalDelay);
+
+  // 4. Tunggu tombol Review di modal.
+  const reviewBtn = await waitForReviewButton(modalDelay || 8000);
+  let reviewUrl = reviewBtn ? extractReviewLinkAddress(reviewBtn, document.body) : '';
+  if (!reviewUrl) reviewUrl = extractReviewLinkAddress(btnEl, btnEl);
+
+  let uuid = reviewUrl ? extractAssignmentIdFromReviewUrl(reviewUrl) : '';
+
+  // 5. Fallback: klik Review + tangkap window.open.
+  if (!isUUID(uuid) && reviewBtn) {
+    capturedWindowOpenUrl = '';
+    clickElement(reviewBtn);
+    await delay(1200);
+    const openUrl = capturedWindowOpenUrl;
+    if (openUrl) uuid = extractAssignmentIdFromReviewUrl(openUrl);
+  }
+
+  // 6. Tutup modal.
+  closeDetailModal();
+  await delay(400);
+
+  const nama = card.nama || '';
+  if (isUUID(uuid)) return { code, nama, uuid, status: 'ok' };
+  return { code, nama, status: 'skip', reason: 'UUID tidak ter-ekstrak' };
+}
+
+// ============================================================
 // LISTENER
 // ============================================================
 chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
@@ -553,6 +630,20 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
   if (message.type === 'STOP_BATCH') {
     state.shouldStop = true;
     state.batchRunning = false;
+    sendResponse({ ok: true });
+    return true;
+  }
+
+  if (message.type === 'NEXT_CODE') {
+    state.shouldStopExtract = false;
+    doExtractCode(message.code || '', message.searchDelay || 1500, message.modalDelay || 2000)
+      .then((r) => sendResponse(r))
+      .catch((err) => sendResponse({ code: message.code, status: 'skip', reason: String(err && err.message || err) }));
+    return true;
+  }
+
+  if (message.type === 'STOP_EXTRACT') {
+    state.shouldStopExtract = true;
     sendResponse({ ok: true });
     return true;
   }
