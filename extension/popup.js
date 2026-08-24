@@ -219,7 +219,9 @@ function formatExtractOutput(dataAcuan, results) {
 extractBtn.addEventListener('click', async () => {
   const raw = extractCodesEl.value.trim();
   if (!raw) { appendLog('❌ Paste minimal 1 code usaha dulu.', 'error'); return; }
-  const codes = raw.split(/\n+/).map((s) => s.trim()).filter(Boolean);
+  const codes = raw.split(/\n+/)
+    .map((s) => s.trim().replace(/^\d+[.)]\s*/, '')) // buang "1. " / "1) " dari list Gemini
+    .filter(Boolean);
   if (!codes.length) { appendLog('❌ Tidak ada code valid.', 'error'); return; }
 
   const tab = await getFasihTab();
