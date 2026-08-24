@@ -21,6 +21,9 @@ chrome.runtime.onMessage.addListener((message) => {
   if (message && message.type === 'BATCH_DONE') {
     sendToGemini(message.text || '', message);
   }
+  if (message && message.type === 'EXTRACT_DONE') {
+    sendToGemini(message.text || '', { source: 'extract' });
+  }
   return false;
 });
 
