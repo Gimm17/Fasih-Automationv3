@@ -1,0 +1,76 @@
+<!DOCTYPE html>
+<html lang="id">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>FASIH Quick Copy</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="popup.css">
+</head>
+<body>
+
+  <header class="header">
+    <div class="header-left">
+      <div class="logo-icon">🔍</div>
+      <div>
+        <h1>FASIH Quick Copy</h1>
+        <p>Scrape hasil query FASIH → kirim ke Gemini</p>
+      </div>
+    </div>
+    <div class="status-indicator">
+      <div class="status-dot idle" id="statusDot"></div>
+      <span class="status-label" id="statusLabel">Idle</span>
+    </div>
+  </header>
+
+  <section class="section">
+    <div class="section-title">Data Acuan <span class="muted-normal">(header tetap di atas hasil)</span></div>
+    <textarea id="dataAcuan" rows="4" placeholder="Teks acuan yang tidak berubah — akan jadi header di atas hasil query saat dikirim ke Gemini.&#10;Contoh: data bangunan/usaha yang sedang diverifikasi."></textarea>
+  </section>
+
+  <section class="section">
+    <button class="btn btn-primary btn-full" id="copyNowBtn" title="Scrape hasil query yang tampil sekarang, copy ke clipboard">
+      📋&nbsp; Copy Sekarang
+    </button>
+    <p class="hint" id="copyHint">Ambil hasil query yang sedang tampil di tab FASIH, lalu copy (Data Acuan + hasil) ke clipboard.</p>
+  </section>
+
+  <section class="section">
+    <div class="section-title">Batch Multi-Keyword</div>
+    <textarea id="keywords" rows="5" placeholder="Satu keyword per baris, contoh:&#10;RUMAH KOSONG&#10;BPR PALU&#10;ALKHAIRAAT"></textarea>
+
+    <div class="config-row">
+      <label for="cfgSearch">Delay search (ms)</label>
+      <input type="number" id="cfgSearch" value="1500" min="500" step="100">
+    </div>
+
+    <div class="controls">
+      <button class="btn btn-primary" id="startBtn">▶&nbsp; Mulai Batch</button>
+      <button class="btn btn-danger" id="stopBtn" disabled>⏹&nbsp; Stop</button>
+    </div>
+  </section>
+
+  <section class="section" id="progressSection" style="display:none">
+    <div class="progress-bar-wrap">
+      <div class="progress-bar" id="progressBar"></div>
+    </div>
+    <div class="progress-stats">
+      <span class="progress-count" id="progressCount">0 / 0</span>
+      <span class="progress-pct" id="progressPct">0%</span>
+    </div>
+    <p class="progress-status" id="progressStatus">Menunggu...</p>
+  </section>
+
+  <section class="section" id="logSection" style="display:none">
+    <div class="log-header">
+      <span>📋 Log</span>
+      <button class="btn-clear" id="clearLogBtn">Clear</button>
+    </div>
+    <div class="log-panel" id="logPanel"></div>
+  </section>
+
+  <script src="popup.js"></script>
+</body>
+</html>

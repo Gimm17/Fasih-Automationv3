@@ -1,0 +1,7 @@
+# Claude session resume dumps
+claude*resume*.txt
+
+# OS / editor
+Thumbs.db
+.DS_Store
+*.log

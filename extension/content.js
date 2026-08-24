@@ -1,0 +1,426 @@
+/**
+ * FASIH Quick Copy — content.js v2 (permanen di FASIH-SM)
+ *
+ * Dua mode:
+ *  1. COPY_NOW  -> scrape hasil query yang sedang tampil -> copy clipboard.
+ *  2. START_BATCH { keywords, searchDelay } -> isi field search satu per satu,
+ *     scrape semua hasil tiap keyword, gabung -> kirim BATCH_DONE ke background.
+ *
+ * Logika parse card & format dipindahkan dari scraper.js (versi terbaru:
+ * key = teks tombol judul, dedup per baris). Logika search & React input
+ * dipinjam dari FASIH-AUTOMATION/content.js (setInputValue, getFreshSearchInput).
+ */
+
+'use strict';
+
+// ============================================================
+// STATE
+// ============================================================
+const state = {
+  batchRunning: false,
+  shouldStop:   false,
+};
+
+const delay = (ms) => new Promise((r) => setTimeout(r, ms));
+
+// ============================================================
+// UTILITIES
+// ============================================================
+function normalizeCode(code) {
+  if (!code) return '';
+  return String(code).replace(/^\d{4,}\s*[-–—]\s*/g, '').trim();
+}
+
+function extractCodeFromText(text) {
+  if (!text) return '';
+  const seMatch = text.match(/SE[0-9a-zA-Z]{5,}/i);
+  if (seMatch) return seMatch[0];
+  const dashMatch = text.match(/^\s*(\d{4,})\s*[-–—]/);
+  if (dashMatch) return dashMatch[1];
+  const d16 = text.match(/\b(\d{16})\b/);
+  if (d16) return d16[1];
+  return '';
+}
+
+function extractField(container, labelText) {
+  if (!container) return '';
+  const esc = labelText.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  const nextLabelPattern =
+    '(?=Nama\\s*Keluarga|Alamat\\s*Prelist|Nomor\\s*Urut|NIB\\s*/\\s*No\\.?\\s*KK|Email|Skala\\s*Usaha|Jumlah\\s*Usaha|Kode\\s*Pos|Perubahan\\s*SLS|$)';
+  const re = new RegExp(esc + '\\s*[:\\n]?' + '([^\\n]*?)' + nextLabelPattern, 'i');
+
+  const labels = container.querySelectorAll('span, label, dt, p, div, b, strong');
+  for (const el of labels) {
+    const t = (el.textContent || '').trim();
+    if (new RegExp('^' + esc + '$', 'i').test(t)) {
+      let nxt = el.nextElementSibling;
+      if (nxt && nxt.textContent && nxt.textContent.trim()) {
+        return nxt.textContent.replace(/\s+/g, ' ').trim();
+      }
+    }
+  }
+
+  const text = (container.innerText || container.textContent || '')
+    .replace(/ /g, ' ')
+    .replace(/[ \t]+/g, ' ');
+  const m = text.match(re);
+  if (m && m[1]) return m[1].trim();
+  return '';
+}
+
+// --- React-controlled search input (dari project lama) -----------------
+function setInputValue(input, value) {
+  if (!input || !input.isConnected) return false;
+  const nativeSetter = Object.getOwnPropertyDescriptor(
+    window.HTMLInputElement.prototype, 'value'
+  ).set;
+  nativeSetter.call(input, value);
+  input.dispatchEvent(new Event('input',  { bubbles: true }));
+  input.dispatchEvent(new Event('change', { bubbles: true }));
+  if (input.value !== value) {
+    input.focus();
+    nativeSetter.call(input, value);
+    input.dispatchEvent(new Event('input',  { bubbles: true }));
+    input.dispatchEvent(new Event('change', { bubbles: true }));
+  }
+  return input.value === value;
+}
+
+function getSearchInput() {
+  return (
+    document.querySelector('input[placeholder="Cari..."]') ||
+    document.querySelector('input[data-tsd-source*="filter-search"]')
+  );
+}
+
+async function getFreshSearchInput(timeout = 8000) {
+  const direct = getSearchInput();
+  if (direct && direct.isConnected) return direct;
+  const start = Date.now();
+  while (Date.now() - start < timeout) {
+    const el = getSearchInput();
+    if (el && el.isConnected) return el;
+    await delay(300);
+  }
+  return null;
+}
+
+// ============================================================
+// CARD COLLECTION (dari scraper.js versi terbaru)
+// ============================================================
+function collectCards(into) {
+  // Kunci = TEKS TOMBOL JUDUL utuh ("KODE - SKALA - NO_URUT"), unik per baris.
+  // Satu bangunan bisa punya >1 entri berkode sama -> kunci pakai kode akan
+  // menimpa entri. Koleksi langsung dari tombol judul.
+  const byRow = into || new Map();
+  const buttons = Array.from(document.querySelectorAll(
+    'button[data-tsd-source*="assignment-list-item"]'
+  ));
+
+  for (const btn of buttons) {
+    const title = (btn.textContent || '').replace(/\s+/g, ' ').trim();
+    if (!title || !/^\d{4,}\s*[-–—]/.test(title)) continue;
+
+    const code = normalizeCode(extractCodeFromText(title));
+    const rowKey = title;
+
+    let container = btn;
+    while (container && container !== document.body) {
+      if (/nama\s*keluarga/i.test(container.innerText || '')) break;
+      container = container.parentElement;
+    }
+
+    const nama   = extractField(container, 'Nama Keluarga/Bangunan/Usaha');
+    const alamat = extractField(container, 'Alamat Prelist');
+    const idsbr  = extractField(container, 'Nomor Urut Bangunan / IDSBR');
+    const nib    = extractField(container, 'NIB / No. KK');
+    const email  = extractField(container, 'Email');
+    const skala  = extractField(container, 'Skala Usaha / Jenis Prelist');
+    const jumlah = extractField(container, 'Jumlah Usaha');
+    const kodepos= extractField(container, 'Kode Pos');
+    const sls    = extractField(container, 'Perubahan SLS');
+
+    const entry = { code, title, nama, alamat, idsbr, nib, email, skala, jumlah, kodepos, sls };
+    const existing = byRow.get(rowKey);
+    if (!existing) {
+      byRow.set(rowKey, entry);
+    } else {
+      for (const k of Object.keys(entry)) {
+        const nv = entry[k];
+        const ov = existing[k];
+        if (nv && nv !== '' && nv !== '-' && nv !== ov) existing[k] = nv;
+      }
+    }
+  }
+
+  return byRow;
+}
+
+// ============================================================
+// AUTO-SCROLL (render semua item virtualized)
+// ============================================================
+async function autoScrollAll(accumulated) {
+  const findScrollContainer = () =>
+    Array.from(document.querySelectorAll('div'))
+      .filter((el) => {
+        const s = window.getComputedStyle(el);
+        return (s.overflowY === 'auto' || s.overflowY === 'scroll') &&
+          el.scrollHeight > el.clientHeight + 10 &&
+          el.querySelector('button[data-tsd-source*="assignment-list-item"], li');
+      })
+      .sort((a, b) => b.scrollHeight - a.scrollHeight)[0] || null;
+
+  let start = Date.now();
+  while (Date.now() - start < 8000 && accumulated.size === 0) {
+    collectCards(accumulated);
+    await delay(300);
+  }
+  collectCards(accumulated);
+
+  // Reset ke atas dulu supaya urutan mulai dari hasil #1.
+  const listEl = findScrollContainer();
+  if (listEl) {
+    listEl.scrollTop = 0;
+    await delay(500);
+  }
+  accumulated.clear();
+  collectCards(accumulated);
+
+  const MAX_ITERATIONS = 200;
+  const DEADLINE = Date.now() + 30000;
+  let container = findScrollContainer();
+  let stagnantRounds = 0;
+
+  for (let i = 0; i < MAX_ITERATIONS && Date.now() < DEADLINE; i++) {
+    const beforeCount = accumulated.size;
+    const beforeTop = container ? container.scrollTop : -1;
+
+    if (container) {
+      container.scrollTop += container.clientHeight;
+    } else {
+      window.scrollBy(0, Math.round(window.innerHeight * 0.8));
+    }
+    await delay(450);
+    container = findScrollContainer() || container;
+    collectCards(accumulated);
+
+    const moved = container ? container.scrollTop !== beforeTop : true;
+    if (accumulated.size === beforeCount && !moved) {
+      stagnantRounds++;
+      if (stagnantRounds >= 3) break;
+    } else {
+      stagnantRounds = 0;
+    }
+  }
+
+  await delay(300);
+  collectCards(accumulated);
+  if (container) container.scrollTop = 0; else window.scrollTo(0, 0);
+  await delay(250);
+  collectCards(accumulated);
+}
+
+// ============================================================
+// TEXT FORMATTING
+// ============================================================
+const DASH = '-';
+function v(x) {
+  const s = String(x || '').trim();
+  return s.length > 0 ? s : DASH;
+}
+
+function formatEntry(e) {
+  const summary = e.title && /^\d{4,}/.test(e.title)
+    ? e.title
+    : [e.code, v(e.nama), v(e.idsbr), v(e.sls)].join(' - ');
+  const detail = [
+    'Nama Keluarga/Bangunan/Usaha', v(e.nama),
+    'Alamat Prelist', v(e.alamat),
+    'Nomor Urut Bangunan / IDSBR', v(e.idsbr),
+    'NIB / No. KK', v(e.nib),
+    'Email', v(e.email),
+    'Skala Usaha / Jenis Prelist', v(e.skala),
+    'Jumlah Usaha', v(e.jumlah),
+    'Kode Pos', v(e.kodepos),
+    'Perubahan SLS', v(e.sls),
+  ].join('\n');
+  return `${summary}\n---\n${detail}`;
+}
+
+function buildOutput(entries) {
+  return entries.map(formatEntry).join('\n\n');
+}
+
+// Bungkus output dengan header "DATA ACUAN" + "HASIL QUERY:".
+// dataAcuan = teks dari form input popup (header tetap, tidak berubah).
+function buildWithHeader(entries, dataAcuan) {
+  const acuan = (String(dataAcuan || '')).trim();
+  const hasil = buildOutput(entries);
+  const parts = [];
+  if (acuan) parts.push(`"DATA ACUAN"\n${acuan}`);
+  parts.push(`"HASIL QUERY:"\n${hasil}`);
+  return parts.join('\n\n');
+}
+
+// ============================================================
+// CLIPBOARD
+// ============================================================
+async function copyToClipboard(text) {
+  try { window.focus(); } catch (_) {}
+  await delay(150);
+  try {
+    await navigator.clipboard.writeText(text);
+    return true;
+  } catch (_) {
+    try {
+      const ta = document.createElement('textarea');
+      ta.value = text;
+      ta.style.position = 'fixed';
+      ta.style.opacity = '0';
+      document.body.appendChild(ta);
+      ta.focus();
+      ta.select();
+      const ok = document.execCommand('copy');
+      ta.remove();
+      return ok;
+    } catch (err) {
+      console.error('[FASIH Quick Copy] Clipboard fallback gagal:', err);
+      return false;
+    }
+  }
+}
+
+// ============================================================
+// MESSAGING (ke popup/background)
+// ============================================================
+function logToPopup(message, level = 'info') {
+  chrome.runtime.sendMessage({ type: 'LOG', message, level }).catch(() => {});
+}
+
+// ============================================================
+// MODE COPY NOW
+// ============================================================
+async function doCopyNow(dataAcuan) {
+  const map = new Map();
+  await autoScrollAll(map);
+  const entries = Array.from(map.values());
+  if (entries.length === 0) {
+    return { ok: false, error: 'Tidak ada hasil ditemukan' };
+  }
+  const text = buildWithHeader(entries, dataAcuan);
+  const copied = await copyToClipboard(text);
+  if (!copied) return { ok: false, message: 'Clipboard gagal' };
+  return { ok: true, count: entries.length };
+}
+
+// ============================================================
+// MODE BATCH
+// ============================================================
+async function doBatch(keywords, searchDelay, dataAcuan) {
+  state.batchRunning = true;
+  state.shouldStop = false;
+
+  const blocks = [];
+  let total = 0;
+
+  logToPopup(`🚀 Batch mulai: ${keywords.length} keyword`, 'info');
+
+  for (let i = 0; i < keywords.length; i++) {
+    if (state.shouldStop) {
+      logToPopup('⛔ Dihentikan pengguna.', 'warning');
+      break;
+    }
+    const kw = keywords[i].trim();
+    if (!kw) continue;
+
+    chrome.runtime.sendMessage({ type: 'PROGRESS', current: i + 1, total: keywords.length, status: `[${i + 1}/${keywords.length}] "${kw}"` }).catch(() => {});
+    logToPopup(`▶ [${i + 1}/${keywords.length}] cari: "${kw}"`, 'info');
+
+    const input = await getFreshSearchInput();
+    if (!input) {
+      logToPopup('❌ Field search "Cari..." tidak ditemukan — skip', 'error');
+      continue;
+    }
+    setInputValue(input, '');
+    await delay(200);
+    setInputValue(input, kw);
+    await delay(searchDelay);
+
+    const map = new Map();
+    await autoScrollAll(map);
+    const entries = Array.from(map.values());
+    logToPopup(`   📋 ${entries.length} hasil untuk "${kw}"`, entries.length ? 'success' : 'info');
+    if (entries.length) {
+      blocks.push(entries.map(formatEntry).join('\n\n'));
+      total += entries.length;
+    }
+  }
+
+  const rawHasil = blocks.join('\n\n');
+  state.batchRunning = false;
+
+  // Bungkus: "DATA ACUAN" (header tetap dari form popup) + "HASIL QUERY:".
+  const acuan = (String(dataAcuan || '')).trim();
+  const parts = [];
+  if (acuan) parts.push(`"DATA ACUAN"\n${acuan}`);
+  parts.push(`"HASIL QUERY:"\n${rawHasil}`);
+  const text = parts.join('\n\n');
+
+  // Backup: salin juga ke clipboard bawaan supaya user bisa paste manual
+  // kalau auto-send ke Gemini gagal (jaga-jaga).
+  if (text.trim()) {
+    const ok = await copyToClipboard(text);
+    logToPopup(
+      ok ? `📋 Backup: ${text.length} char juga ter-copy ke clipboard (paste manual = Ctrl+V).` : '⚠️ Backup clipboard gagal.',
+      ok ? 'info' : 'warning'
+    );
+  }
+
+  chrome.runtime.sendMessage({
+    type: 'BATCH_DONE',
+    text,
+    total,
+    keywordsCount: keywords.length,
+    stopped: state.shouldStop,
+  }).catch(() => {});
+
+  logToPopup(`🏁 Batch selesai: ${total} hasil total.`, 'success');
+}
+
+// ============================================================
+// LISTENER
+// ============================================================
+chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
+  if (message.type === 'PING') {
+    sendResponse({ ok: true, running: state.batchRunning });
+    return true;
+  }
+
+  if (message.type === 'COPY_NOW') {
+    doCopyNow(message.dataAcuan || '')
+      .then((r) => sendResponse(r))
+      .catch((err) => sendResponse({ ok: false, error: err.message }));
+    return true; // async
+  }
+
+  if (message.type === 'START_BATCH') {
+    if (state.batchRunning) {
+      sendResponse({ ok: false, error: 'Batch sudah berjalan' });
+      return true;
+    }
+    doBatch(message.keywords || [], message.searchDelay || 1500, message.dataAcuan || '');
+    sendResponse({ ok: true });
+    return true;
+  }
+
+  if (message.type === 'STOP_BATCH') {
+    state.shouldStop = true;
+    state.batchRunning = false;
+    sendResponse({ ok: true });
+    return true;
+  }
+
+  return false;
+});
+
+console.log('[FASIH Quick Copy v2] Content script loaded ✔');
