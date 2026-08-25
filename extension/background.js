@@ -433,6 +433,11 @@ async function getGeminiTab() {
 // Jalankan pencarian FASIH untuk satu keyword, kembalikan text hasil query.
 // START_BATCH dengan noAutoSend => BATCH_DONE disimpan ke pendingBatchText.
 async function runOneKeyword(fasihTabId, keyword, dataAcuan) {
+  // Pastikan content.js ter-load di tab FASIH sebelum START_BATCH — kalau tidak,
+  // sendMessage reject instan dan semua keyword jadi '' (gejala "selesai 1 detik").
+  const ok = await ensureContentLoaded(fasihTabId);
+  if (!ok) { logPopup('❌ content script tidak bisa di-load di tab FASIH.', 'error'); return ''; }
+
   return new Promise((resolve) => {
     pendingBatchResolve = (text) => { pendingBatchResolve = null; resolve(text || ''); };
     chrome.tabs.sendMessage(fasihTabId, {
