@@ -390,15 +390,165 @@ chrome.runtime.onMessage.addListener((message) => {
   } else if (message.type === 'ASSIGN_DUP_NONE') {
     appendLog('⏱️ Gemini tidak indikasi duplikat dalam 90s. Round-trip selesai.', 'warning');
     setStatus('idle');
+  } else if (message.type === 'EXCEL_RUN_DONE') {
+    excelResultMap = message.results || [];
+    setStatus('done');
+    prosesSemuaBtn.disabled = false;
+    stopExcelBtn.disabled = true;
+    downloadHasilBtn.style.display = '';
+    const filled = excelResultMap.filter((r) => r && r.assignment_id_duplicate).length;
+    appendLog(`🎉 Proses selesai: ${filled}/${excelResultMap.length} baris punya assignment_id_duplicate. Klik Download Hasil.`, 'success');
   }
 });
+
+// ============================================================
+// EXCEL UPLOAD + PROSES SEMUA BARIS
+// ============================================================
+const excelFileEl  = $('excelFile');
+const uploadZone   = $('uploadZone');
+const fileInfo     = $('fileInfo');
+const rowCountEl   = $('rowCount');
+const prosesSemuaBtn = $('prosesSemuaBtn');
+const stopExcelBtn = $('stopExcelBtn');
+const downloadHasilBtn = $('downloadHasilBtn');
+
+let excelRawBase64 = null;
+let excelFilename = 'hasil_proses.xlsx';
+let excelParsedRows = [];
+let excelResultMap = null; // { assignment_id_duplicate, nama_duplicate, catatan } per row index
+
+function arrayBufferToBase64(buffer) {
+  let binary = '';
+  const bytes = new Uint8Array(buffer);
+  const len = bytes.byteLength;
+  for (let i = 0; i < len; i++) binary += String.fromCharCode(bytes[i]);
+  return btoa(binary);
+}
+
+async function handleExcelFile(file) {
+  if (!file.name.match(/\.(xlsx|xls)$/i)) {
+    appendLog('Format file harus .xlsx atau .xls', 'error');
+    return;
+  }
+  try {
+    const buffer = await file.arrayBuffer();
+    excelRawBase64 = arrayBufferToBase64(buffer);
+    const wb = XLSX.read(buffer, { type: 'array' });
+    const wsName = wb.SheetNames[0];
+    const ws = wb.Sheets[wsName];
+    excelParsedRows = XLSX.utils.sheet_to_json(ws, { defval: '' });
+    if (!excelParsedRows.length) { appendLog('File Excel kosong!', 'error'); return; }
+    excelFilename = file.name.replace(/\.(xlsx|xls)$/i, '') + '_hasil.xlsx';
+    rowCountEl.textContent = `✅ ${excelParsedRows.length} baris siap diproses`;
+    fileInfo.style.display = '';
+    prosesSemuaBtn.disabled = false;
+    appendLog(`📄 File ${file.name}: ${excelParsedRows.length} baris dimuat.`, 'success');
+  } catch (err) {
+    appendLog(`❌ Gagal parse Excel: ${err.message}`, 'error');
+  }
+}
+
+uploadZone.addEventListener('dragover', (e) => { e.preventDefault(); uploadZone.classList.add('dragover'); });
+uploadZone.addEventListener('dragleave', () => uploadZone.classList.remove('dragover'));
+uploadZone.addEventListener('drop', (e) => {
+  e.preventDefault(); uploadZone.classList.remove('dragover');
+  const f = e.dataTransfer && e.dataTransfer.files && e.dataTransfer.files[0];
+  if (f) handleExcelFile(f);
+});
+excelFileEl.addEventListener('change', () => { if (excelFileEl.files[0]) handleExcelFile(excelFileEl.files[0]); });
+
+prosesSemuaBtn.addEventListener('click', async () => {
+  if (!excelParsedRows.length) { appendLog('❌ Upload file Excel dulu.', 'error'); return; }
+  const missing = ['data1', 'code_identity', 'Batch_Multi-Keyword_(variasin_nama)'];
+  const cols = Object.keys(excelParsedRows[0]);
+  for (const c of missing) {
+    if (!cols.includes(c)) { appendLog(`❌ Kolom "${c}" tidak ditemukan di Excel!`, 'error'); return; }
+  }
+  setStatus('running');
+  prosesSemuaBtn.disabled = true;
+  stopExcelBtn.disabled = false;
+  downloadHasilBtn.style.display = 'none';
+  excelResultMap = null;
+  appendLog(`🚀 Proses ${excelParsedRows.length} baris dimulai...`, 'info');
+  try {
+    await chrome.runtime.sendMessage({
+      type: 'START_EXCEL_RUN',
+      rows: excelParsedRows.map((r) => ({
+        data1: String(r.data1 || ''),
+        code_identity: String(r.code_identity || ''),
+        'Batch_Multi-Keyword_(variasin_nama)': String(r['Batch_Multi-Keyword_(variasin_nama)'] || ''),
+      })),
+    });
+  } catch (err) {
+    appendLog(`❌ Gagal mulai proses: ${err.message}`, 'error');
+    setStatus('stopped');
+    prosesSemuaBtn.disabled = false;
+    stopExcelBtn.disabled = true;
+  }
+});
+
+stopExcelBtn.addEventListener('click', async () => {
+  chrome.runtime.sendMessage({ type: 'STOP_EXCEL_RUN' }).catch(() => {});
+  appendLog('⛔ Stop proses Excel diminta.', 'warning');
+  setStatus('stopped');
+  prosesSemuaBtn.disabled = false;
+  stopExcelBtn.disabled = true;
+});
+
+downloadHasilBtn.addEventListener('click', () => generateExcelDownload());
+
+function generateExcelDownload() {
+  if (!excelRawBase64) { appendLog('❌ Tidak ada file Excel.', 'error'); return; }
+  if (!excelResultMap) { appendLog('❌ Belum ada hasil proses.', 'error'); return; }
+  try {
+    const wb = XLSX.read(excelRawBase64, { type: 'base64', cellStyles: true });
+    const wsName = wb.SheetNames[0];
+    const ws = wb.Sheets[wsName];
+    const range = XLSX.utils.decode_range(ws['!ref']);
+    // Cari index kolom hasil dari header row 0.
+    const targets = { assignment_id_duplicate: -1, nama_duplicate: -1, catatan: -1 };
+    for (let c = range.s.c; c <= range.e.c; c++) {
+      const h = ws[XLSX.utils.encode_cell({ r: 0, c: c })];
+      const hval = h ? String(h.v).trim() : '';
+      if (hval in targets && targets[hval] === -1) targets[hval] = c;
+    }
+    for (let rowIdx = 0; rowIdx < excelParsedRows.length; rowIdx++) {
+      const res = excelResultMap[rowIdx];
+      if (!res) continue;
+      const excelRow = rowIdx + 1; // header = row 0
+      for (const [colName, colIdx] of Object.entries(targets)) {
+        if (colIdx === -1) continue;
+        const val = res[colName] || '';
+        ws[XLSX.utils.encode_cell({ r: excelRow, c: colIdx })] = { t: 's', v: val };
+      }
+    }
+    const wbout = XLSX.write(wb, { bookType: 'xlsx', type: 'base64' });
+    const dataUrl = `data:application/vnd.openxmlformats-officedocument.spreadsheetml.sheet;base64,${wbout}`;
+    if (chrome.downloads && chrome.downloads.download) {
+      chrome.downloads.download({ url: dataUrl, filename: excelFilename, saveAs: true }, (id) => {
+        if (chrome.runtime.lastError) downloadViaLink(dataUrl, excelFilename);
+        else appendLog(`📥 File "${excelFilename}" berhasil didownload.`, 'success');
+      });
+    } else {
+      downloadViaLink(dataUrl, excelFilename);
+    }
+  } catch (err) {
+    appendLog(`❌ Gagal generate Excel: ${err.message}`, 'error');
+  }
+}
+
+function downloadViaLink(url, filename) {
+  const a = document.createElement('a');
+  a.href = url; a.download = filename;
+  document.body.appendChild(a); a.click(); document.body.removeChild(a);
+  appendLog(`📥 File "${filename}" didownload via browser.`, 'success');
+}
 
 // ============================================================
 // PERSIST (Data Acuan & keyword agar tidak hilang saat popup ditutup)
 // ============================================================
 const PERSIST_KEYS = ['dataAcuan', 'keywords', 'cfgSearch', 'extractCodes', 'cfgModal'];
 function savePersist() {
-  const obj = {};
   PERSIST_KEYS.forEach((k) => {
     const el = $(k);
     if (el) obj[k] = el.value;

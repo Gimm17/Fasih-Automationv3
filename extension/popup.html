@@ -68,6 +68,25 @@
     </div>
   </section>
 
+  <section class="section">
+    <div class="section-title">Upload Excel (Proses Semua Baris)</div>
+    <p class="hint">File .xlsx dengan kolom: <b>data1</b>, <b>code_identity</b>, <b>Batch_Multi-Keyword_(variasin_nama)</b>, <b>assignment_id_duplicate</b>, <b>nama_duplicate</b>, <b>catatan</b>.</p>
+    <div class="upload-zone" id="uploadZone">
+      <div class="upload-icon">📄</div>
+      <div class="upload-title">Klik untuk pilih file Excel</div>
+      <div class="upload-sub">atau drag & drop .xlsx / .xls</div>
+      <input type="file" id="excelFile" accept=".xlsx,.xls">
+    </div>
+    <div class="file-info" id="fileInfo" style="display:none">
+      <div class="row-count" id="rowCount"></div>
+    </div>
+    <div class="controls">
+      <button class="btn btn-primary" id="prosesSemuaBtn" disabled>▶&nbsp; Proses Semua Baris</button>
+      <button class="btn btn-danger" id="stopExcelBtn" disabled>⏹&nbsp; Stop</button>
+    </div>
+    <button class="btn btn-success btn-full" id="downloadHasilBtn" style="display:none; margin-top:8px">📥&nbsp; Download Hasil</button>
+  </section>
+
   <section class="section" id="progressSection" style="display:none">
     <div class="progress-bar-wrap">
       <div class="progress-bar" id="progressBar"></div>
