@@ -462,7 +462,7 @@ async function doCopyNow(dataAcuan) {
 // ============================================================
 // MODE BATCH
 // ============================================================
-async function doBatch(keywords, searchDelay, dataAcuan) {
+async function doBatch(keywords, searchDelay, dataAcuan, noAutoSend) {
   state.batchRunning = true;
   state.shouldStop = false;
 
@@ -528,6 +528,8 @@ async function doBatch(keywords, searchDelay, dataAcuan) {
     total,
     keywordsCount: keywords.length,
     stopped: state.shouldStop,
+    noAutoSend: !!noAutoSend,
+    dataAcuan,
   }).catch(() => {});
 
   logToPopup(`🏁 Batch selesai: ${total} hasil total.`, 'success');
@@ -639,7 +641,7 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
       sendResponse({ ok: false, error: 'Batch sudah berjalan' });
       return true;
     }
-    doBatch(message.keywords || [], message.searchDelay || 1500, message.dataAcuan || '');
+    doBatch(message.keywords || [], message.searchDelay || 1500, message.dataAcuan || '', message.noAutoSend);
     sendResponse({ ok: true });
     return true;
   }

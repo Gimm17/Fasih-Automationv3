@@ -48,7 +48,13 @@ async function ensureContentLoaded(tabId) {
 
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   if (message && message.type === 'BATCH_DONE') {
-    sendToGemini(message.text || '', message);
+    if (message.noAutoSend) {
+      // Orchestrator Excel: simpan text, orchestrator yang kirim ke Gemini.
+      pendingBatchText = message.text || '';
+      pendingBatchResolve && pendingBatchResolve(pendingBatchText);
+    } else {
+      sendToGemini(message.text || '', message);
+    }
     return false;
   }
   if (message && message.type === 'EXTRACT_DONE') {
@@ -70,6 +76,16 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     bgExtractStopped = true;
     return false;
   }
+  if (message && message.type === 'START_EXCEL_RUN') {
+    const rows = (message.rows || []).filter(Boolean);
+    if (!rows.length) { logPopup('ℹ️ Tidak ada baris Excel untuk diproses.', 'info'); return false; }
+    startExcelRun(rows).catch((e) => logPopup(`❌ Excel run error: ${e.message}`, 'error'));
+    return false;
+  }
+  if (message && message.type === 'STOP_EXCEL_RUN') {
+    stopExcelRun();
+    return false;
+  }
   return false;
 });
 
@@ -80,7 +96,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
 // tab switch ke Gemini).
 // ============================================================
 async function runBgFasihExtract(codes, searchDelay, modalDelay) {
-  if (bgRoundTripRunning) return;
+  if (bgRoundTripRunning) return [];
   bgRoundTripRunning = true;
   // NOTE: bgExtractStopped TIDAK di-reset di sini. Stop di-rearm di titik mulai round-trip
   // (pollGeminiResponse / START_FASIH_EXTRACT), bukan di sini, supaya stop yang datang
@@ -92,10 +108,10 @@ async function runBgFasihExtract(codes, searchDelay, modalDelay) {
     const tab = await getFasihTabBg();
     if (!tab) {
       logPopup('❌ Tab FASIH tidak ditemukan untuk round-trip.', 'error');
-      return;
+      return [];
     }
     const ok = await ensureContentLoaded(tab.id);
-    if (!ok) return;
+    if (!ok) return [];
 
     for (let i = 0; i < codes.length; i++) {
       if (bgExtractStopped) break;
@@ -120,18 +136,11 @@ async function runBgFasihExtract(codes, searchDelay, modalDelay) {
 
     if (bgExtractStopped) {
       logPopup('⛔ Round-trip dihentikan.', 'warning');
-      return;
+      return links.filter(Boolean);
     }
 
     const clean = links.filter(Boolean);
-    if (!clean.length) {
-      logPopup('⚠️ Tidak ada link terkumpul. Round-2 dilewati.', 'warning');
-      return;
-    }
-    const text = clean.join(' ; ');
-    logPopup(`➡️ Round 2: kirim ${clean.length} link ke Gemini (dipisah ;).`, 'success');
-    // sendToGemini dengan meta.source='extract' agar TIDAK trigger poll lagi (hindari loop).
-    sendToGemini(text, { source: 'extract' });
+    return clean;
   } finally {
     bgRoundTripRunning = false;
   }
@@ -371,4 +380,138 @@ async function pollGeminiResponse(tabId) {
 
   logPopup('⏱️ Tidak ada assignment_id_duplicate terdeteksi dalam 90 detik. Selesai.', 'warning');
   chrome.runtime.sendMessage({ type: 'ASSIGN_DUP_NONE' }).catch(() => {});
+}
+
+// ============================================================
+// EXCEL ORCHESTRATOR (loop per baris, background)
+// ============================================================
+let excelRunStopped = false;
+let excelRows = [];        // { data1, code_identity, 'Batch_Multi-Keyword_(variasin_nama)', ... }
+let excelResults = [];     // { assignment_id_duplicate, nama_duplicate, catatan }
+let excelRunning = false;
+let pendingBatchText = '';
+let pendingBatchResolve = null;
+
+// Poll respons Gemini generik: ulangi sampai pred tidak null / timeout.
+async function pollGeminiUntil(tabId, pred, timeoutMs = 90000) {
+  const POLL_MS = 3000;
+  const DEADLINE = Date.now() + timeoutMs;
+  while (Date.now() < DEADLINE) {
+    await new Promise((r) => setTimeout(r, POLL_MS));
+    const r = await readGeminiResponse(tabId);
+    if (!r) continue;
+    const v = pred(r);
+    if (v !== null && v !== undefined && v !== '') return v;
+  }
+  return null;
+}
+
+// Round-1: respons berisi nama_duplicate/catatan (atau minimal kode terindikasi).
+async function pollRound1(tabId) {
+  return pollGeminiUntil(tabId, (r) => {
+    if (r && r.mode === 'round1' && (r.namaDuplicate || r.catatan || r.codes.length)) {
+      return { namaDuplicate: r.namaDuplicate || '', catatan: r.catatan || '', codes: r.codes };
+    }
+    return null;
+  });
+}
+
+// Round-2: respons berisi assignment_id_duplicate final (UUID).
+async function pollRound2(tabId) {
+  return pollGeminiUntil(tabId, (r) => {
+    if (r && r.assignmentId) return r.assignmentId;
+    if (r && r.codes && r.codes.length && r.mode === 'round2') return r.codes[0];
+    return null;
+  });
+}
+
+async function getGeminiTab() {
+  const tabs = await chrome.tabs.query({ url: '*://gemini.google.com/*' });
+  return tabs[0] || null;
+}
+
+// Jalankan pencarian FASIH untuk satu keyword, kembalikan text hasil query.
+// START_BATCH dengan noAutoSend => BATCH_DONE disimpan ke pendingBatchText.
+async function runOneKeyword(fasihTabId, keyword, dataAcuan) {
+  return new Promise((resolve) => {
+    pendingBatchResolve = (text) => { pendingBatchResolve = null; resolve(text || ''); };
+    chrome.tabs.sendMessage(fasihTabId, {
+      type: 'START_BATCH', keywords: [keyword], searchDelay: 1500, dataAcuan, noAutoSend: true,
+    }).catch(() => { pendingBatchResolve = null; resolve(''); });
+    // Fallback timeout kalau BATCH_DONE tidak datang.
+    setTimeout(() => { if (pendingBatchResolve) { pendingBatchResolve = null; resolve(''); } }, 90000);
+  });
+}
+
+async function startExcelRun(rows) {
+  if (excelRunning) { logPopup('⚠️ Proses Excel sudah berjalan.', 'warning'); return; }
+  excelRunning = true;
+  excelRunStopped = false;
+  excelRows = rows;
+  excelResults = rows.map(() => ({ assignment_id_duplicate: '', nama_duplicate: '', catatan: '' }));
+
+  const fasihTab = await getFasihTabBg();
+  const gemTab = await getGeminiTab();
+
+  for (let i = 0; i < excelRows.length; i++) {
+    if (excelRunStopped) break;
+    const row = excelRows[i];
+    const dataAcuan = `${(row.data1 || '').trim()} ${(row.code_identity || '').trim()}`.trim();
+    const kwRaw = row['Batch_Multi-Keyword_(variasin_nama)'] || '';
+    const keywords = String(kwRaw).split(';').map((s) => s.trim()).filter(Boolean);
+
+    logPopup(`\n📊 [Baris ${i + 1}/${excelRows.length}] ${dataAcuan || '(kosong)'}`, 'info');
+    if (!fasihTab) { logPopup('❌ Tab FASIH tidak ditemukan. Berhenti.', 'error'); break; }
+    if (!gemTab) { logPopup('❌ Tab Gemini tidak ditemukan. Berhenti.', 'error'); break; }
+
+    // 1. Query FASIH per keyword, kumpulkan hasil query.
+    const blocks = [];
+    for (const kw of keywords) {
+      if (excelRunStopped) break;
+      logPopup(`   🔍 cari: "${kw}"`, 'info');
+      const textPart = await runOneKeyword(fasihTab.id, kw, dataAcuan);
+      if (textPart) blocks.push(textPart);
+    }
+    if (!blocks.length) { logPopup('   ⚠️ Tidak ada hasil query. Skip baris.', 'warning'); continue; }
+    const round1Text = blocks.join('\n\n');
+
+    // 2. Kirim round-1 ke Gemini.
+    await sendToGemini(round1Text, { source: 'excel' });
+    const r1 = await pollRound1(gemTab.id);
+    if (r1) {
+      excelResults[i].nama_duplicate = r1.namaDuplicate;
+      excelResults[i].catatan = r1.catatan;
+      logPopup(`   ✅ round-1: nama="${r1.namaDuplicate}" catatan="${r1.catatan.slice(0, 40)}"`, 'success');
+    } else {
+      logPopup('   ⚠️ round-1 tidak terdeteksi (tidak ada duplikat?). Skip baris.', 'warning');
+      continue;
+    }
+
+    // 3. Ekstraksi link FASIH untuk kode terindikasi.
+    if (excelRunStopped) break;
+    const links = await runBgFasihExtract(r1.codes, 1500, 2000);
+    if (!links.length) { logPopup('   ⚠️ Tidak ada link ter-ekstrak. Round-2 dilewati.', 'warning'); continue; }
+
+    // 4. Kirim link → Gemini round-2, poll UUID final.
+    const linkText = links.join(' ; ');
+    logPopup(`   ➡️ round-2: kirim ${links.length} link`, 'info');
+    await sendToGemini(linkText, { source: 'excel' });
+    const uuid = await pollRound2(gemTab.id);
+    if (uuid) {
+      excelResults[i].assignment_id_duplicate = uuid;
+      logPopup(`   ✅ assignment_id_duplicate: ${uuid}`, 'success');
+    } else {
+      logPopup('   ⚠️ UUID round-2 tidak terdeteksi.', 'warning');
+    }
+  }
+
+  excelRunning = false;
+  excelRunStopped = false;
+  chrome.runtime.sendMessage({ type: 'EXCEL_RUN_DONE', results: excelResults }).catch(() => {});
+}
+
+function stopExcelRun() {
+  excelRunStopped = true;
+  bgExtractStopped = true;
+  logPopup('⛔ Stop proses Excel diminta.', 'warning');
 }
