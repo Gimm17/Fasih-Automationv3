@@ -3,7 +3,7 @@
   "name": "FASIH Quick Copy",
   "version": "2.0.0",
   "description": "Copy hasil query FASIH-SM BPS: satu klik atau batch multi-keyword, kirim otomatis ke Gemini.",
-  "permissions": ["activeTab", "scripting", "clipboardWrite", "tabs", "storage", "downloads"],
+  "permissions": ["activeTab", "scripting", "clipboardWrite", "tabs", "storage", "downloads", "alarms"],
   "host_permissions": [
     "https://fasih-sm.bps.go.id/*",
     "https://gemini.google.com/*"

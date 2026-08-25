@@ -450,6 +450,18 @@ async function startExcelRun(rows) {
   excelRows = rows;
   excelResults = rows.map(() => ({ assignment_id_duplicate: '', nama_duplicate: '', catatan: '' }));
 
+  // Keep-alive service worker: alarm tiap 20 detik cegah SW idle >30s dimatikan
+  // selama loop panjang (0-hasil keyword / crawl lambat pernah bikin SW mati).
+  const keepAlive = async () => {
+    try {
+      await chrome.alarms.create('fasihExcelKeepAlive', { periodInMinutes: 0.33 });
+      chrome.alarms.onAlarm.addListener((a) => {
+        if (a.name === 'fasihExcelKeepAlive' && excelRunning) logPopup('', 'info');
+      });
+    } catch (_) {}
+  };
+  await keepAlive();
+
   const fasihTab = await getFasihTabBg();
   const gemTab = await getGeminiTab();
 
@@ -507,6 +519,7 @@ async function startExcelRun(rows) {
 
   excelRunning = false;
   excelRunStopped = false;
+  try { await chrome.alarms.clear('fasihExcelKeepAlive'); } catch (_) {}
   chrome.runtime.sendMessage({ type: 'EXCEL_RUN_DONE', results: excelResults }).catch(() => {});
 }
 

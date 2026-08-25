@@ -323,6 +323,11 @@ async function autoScrollAll(accumulated) {
   }
   collectCards(accumulated);
 
+  // Kalau TIDAK ada hasil sama sekali, keluar cepat. Scroll loop 30 detik di bawah
+  // akan buang waktu pada kasus 0 hasil (container null -> moved selalu true) dan
+  // bikin service worker background idle > 30s terus dimatikan.
+  if (accumulated.size === 0) return;
+
   // Reset ke atas dulu supaya urutan mulai dari hasil #1.
   const listEl = findScrollContainer();
   if (listEl) {
