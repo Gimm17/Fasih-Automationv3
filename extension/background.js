@@ -450,13 +450,14 @@ async function startExcelRun(rows) {
   excelRows = rows;
   excelResults = rows.map(() => ({ assignment_id_duplicate: '', nama_duplicate: '', catatan: '' }));
 
-  // Keep-alive service worker: alarm tiap 20 detik cegah SW idle >30s dimatikan
-  // selama loop panjang (0-hasil keyword / crawl lambat pernah bikin SW mati).
+  // Keep-alive service worker: alarm tiap 30 detik (minimum periodInMinutes Chrome = 0.5)
+  // cegah SW idle >30s dimatikan selama loop panjang. Listener no-op, cukup buat SW
+  // tetap hidup di tiap tick.
   const keepAlive = async () => {
     try {
-      await chrome.alarms.create('fasihExcelKeepAlive', { periodInMinutes: 0.33 });
+      await chrome.alarms.create('fasihExcelKeepAlive', { periodInMinutes: 0.5 });
       chrome.alarms.onAlarm.addListener((a) => {
-        if (a.name === 'fasihExcelKeepAlive' && excelRunning) logPopup('', 'info');
+        if (a.name === 'fasihExcelKeepAlive') { /* no-op keep-alive */ }
       });
     } catch (_) {}
   };
