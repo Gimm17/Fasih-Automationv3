@@ -549,6 +549,7 @@ function downloadViaLink(url, filename) {
 // ============================================================
 const PERSIST_KEYS = ['dataAcuan', 'keywords', 'cfgSearch', 'extractCodes', 'cfgModal'];
 function savePersist() {
+  const obj = {};
   PERSIST_KEYS.forEach((k) => {
     const el = $(k);
     if (el) obj[k] = el.value;
