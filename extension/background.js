@@ -406,14 +406,26 @@ async function pollGeminiUntil(tabId, pred, timeoutMs = 90000) {
   return null;
 }
 
-// Round-1: respons berisi nama_duplicate/catatan (atau minimal kode terindikasi).
+// Round-1: WAJIB tunggu sampai codes (assignment_id_duplicate) terisi — Gemini
+// streaming bisa tampilkan nama_duplicate lebih dulu sebelum kode. Plus stabil-check
+// (2 poll sama) supaya semua kode (dipisah ;) sudah selesai di-stream.
 async function pollRound1(tabId) {
-  return pollGeminiUntil(tabId, (r) => {
-    if (r && r.mode === 'round1' && (r.namaDuplicate || r.catatan || r.codes.length)) {
-      return { namaDuplicate: r.namaDuplicate || '', catatan: r.catatan || '', codes: r.codes };
+  const POLL_MS = 3000;
+  const DEADLINE = Date.now() + 90000;
+  let lastRaw = '';
+  let stable = 0;
+  while (Date.now() < DEADLINE) {
+    await new Promise((r) => setTimeout(r, POLL_MS));
+    const r = await readGeminiResponse(tabId);
+    if (!r || r.mode !== 'round1') continue;
+    if (r.codes.length && (r.namaDuplicate || r.catatan)) {
+      if (r.raw === lastRaw) stable++; else { stable = 1; lastRaw = r.raw; }
+      if (stable >= 2) {
+        return { namaDuplicate: r.namaDuplicate || '', catatan: r.catatan || '', codes: r.codes };
+      }
     }
-    return null;
-  });
+  }
+  return null;
 }
 
 // Round-2: respons berisi assignment_id_duplicate final (UUID).
