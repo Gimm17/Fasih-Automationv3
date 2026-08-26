@@ -466,6 +466,7 @@ async function startExcelRun(rows) {
   excelRunStopped = false;
   excelRows = rows;
   excelResults = rows.map(() => ({ assignment_id_duplicate: '', nama_duplicate: '', catatan: '' }));
+  try { await chrome.storage.session.set({ fasih_excel_running: true, fasih_excel_total: rows.length }); } catch (_) {}
 
   // Keep-alive service worker: alarm tiap 30 detik (minimum periodInMinutes Chrome = 0.5)
   // cegah SW idle >30s dimatikan selama loop panjang. Listener no-op, cukup buat SW
@@ -538,11 +539,22 @@ async function startExcelRun(rows) {
   excelRunning = false;
   excelRunStopped = false;
   try { await chrome.alarms.clear('fasihExcelKeepAlive'); } catch (_) {}
+  try { await chrome.storage.session.set({ fasih_excel_running: false, fasih_excel_total: excelRows.length }); } catch (_) {}
   chrome.runtime.sendMessage({ type: 'EXCEL_RUN_DONE', results: excelResults }).catch(() => {});
 }
 
 function stopExcelRun() {
   excelRunStopped = true;
   bgExtractStopped = true;
+  try { chrome.storage.session.set({ fasih_excel_running: false }); } catch (_) {}
   logPopup('⛔ Stop proses Excel diminta.', 'warning');
 }
+
+// Popup tanya status run saat dibuka kembali (indikator tidak hilang saat pindah tab).
+chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
+  if (message && message.type === 'GET_EXCEL_STATUS') {
+    sendResponse({ running: excelRunning, total: excelRows.length });
+    return true;
+  }
+  return false;
+});

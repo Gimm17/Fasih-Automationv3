@@ -577,9 +577,20 @@ function savePersist() {
     }
   } catch (_) {}
 
+  // Restore status proses Excel dari background (indikator tidak hilang saat pindah tab).
+  try {
+    const res = await chrome.runtime.sendMessage({ type: 'GET_EXCEL_STATUS' });
+    if (res && res.running) {
+      setStatus('running');
+      prosesSemuaBtn.disabled = true;
+      stopExcelBtn.disabled = false;
+      appendLog(`🔁 Proses masih berjalan (${res.total || '?'} baris). Stop tetap bisa diklik.`, 'info');
+    }
+  } catch (_) {}
+
   const tab = await getFasihTab();
   if (!tab) {
     appendLog('ℹ️ Buka tab FASIH (fasih-sm.bps.go.id) untuk mulai.', 'info');
   }
-  setStatus('idle');
+  if (!(document.querySelector('.status-dot.running'))) setStatus('idle');
 })();
