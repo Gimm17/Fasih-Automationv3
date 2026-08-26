@@ -185,7 +185,7 @@ function FASIH_FILL_GEMINI(text) {
         };
 
         let editor = null;
-        for (let i = 0; i < 40; i++) { editor = pickEditor(); if (editor) break; await wait(200); }
+        for (let i = 0; i < 60; i++) { editor = pickEditor(); if (editor) break; await wait(150); }
         if (!editor) return resolve({ ok: false, error: 'editor not found' });
 
         // Focus dengan retry (tab baru aktif programatik -> dokumen belum fokus).
@@ -289,8 +289,8 @@ async function sendToGemini(text, meta) {
     await chrome.tabs.update(tab.id, { active: true });
     logPopup('➡️ Pindah ke tab Gemini, menyiapkan kirim...', 'info');
 
-    // Jeda agar tab benar-benar fokus sebelum inject MAIN-world.
-    await new Promise((r) => setTimeout(r, 800));
+    // Jeda singkat agar tab fokus dulu; sisanya ditangani poll editor di MAIN world.
+    await new Promise((r) => setTimeout(r, 600));
 
     const [res] = await chrome.scripting.executeScript({
       target: { tabId: tab.id },
