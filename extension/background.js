@@ -276,14 +276,13 @@ async function sendToGemini(text, meta) {
     return;
   }
 
-  const tabs = await chrome.tabs.query({ url: '*://gemini.google.com/*' });
-  if (!tabs.length) {
+  const tab = await getGeminiTab();
+  if (!tab) {
     logPopup('❌ Tab Gemini tidak ditemukan. Buka gemini.google.com dulu.', 'error');
     chrome.runtime.sendMessage({ type: 'GEMINI_TAB_NOT_FOUND' }).catch(() => {});
     badge('✖', '#d93025');
     return;
   }
-  const tab = tabs[0];
 
   try {
     await chrome.tabs.update(tab.id, { active: true });
@@ -438,6 +437,10 @@ async function pollRound2(tabId) {
 }
 
 async function getGeminiTab() {
+  // Prioritaskan tab Gemini yang sedang AKTIF (user buka chat spesifik seperti
+  // gemini.google.com/app/8613802b61a8f67c). Fallback ke tab Gemini pertama.
+  const [active] = await chrome.tabs.query({ active: true, currentWindow: true });
+  if (active && active.url && active.url.includes('gemini.google.com')) return active;
   const tabs = await chrome.tabs.query({ url: '*://gemini.google.com/*' });
   return tabs[0] || null;
 }
